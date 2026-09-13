@@ -493,6 +493,83 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(result["pre_existing_tests_pass"])
         self.assertIn("unittest.pyc", result["extra_changed_files"])
 
+    def test_assume_unchanged_cannot_hide_test_edits(self):
+        # --assume-unchanged makes git ignore worktree edits, hiding a
+        # tampered test from both the containment report and the restore;
+        # the runner clears the flag before diffing.
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            "printf 'import unittest\\n\\nclass AllocateTests(unittest.TestCase):"
+            "\\n    def test_shares_sum_exactly_to_income(self):\\n        pass\\n' > test_budget.py\n"
+            "git update-index --assume-unchanged test_budget.py\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        # The hidden edit is reported and the pristine test restored.
+        self.assertIn("test_budget.py", result["extra_changed_files"])
+        repo = Path(result["workdir"]) / "repo"
+        self.assertEqual(
+            (repo / "test_budget.py").read_text(),
+            (FIXTURES / "py-budget" / "test_budget.py").read_text(),
+        )
+        # The restored suite still fails the seeded bug.
+        self.assertFalse(result["target_test_passes"])
+
+    def test_planted_cache_bytecode_cannot_fake_pass(self):
+        # An UNCHECKED_HASH pyc in __pycache__ shadows the source even
+        # after restore (no source validation), so restore must clear
+        # bytecode caches before scoring.
+        plant = "\n".join(
+            [
+                "import os, sys, py_compile",
+                "source = '''import unittest",
+                "",
+                "class AllocateTests(unittest.TestCase):",
+                "    def test_shares_sum_exactly_to_income(self):",
+                "        pass",
+                "'''",
+                "open('weak.py', 'w').write(source)",
+                "py_compile.compile(",
+                "    'weak.py',",
+                "    cfile=f'__pycache__/test_budget.{sys.implementation.cache_tag}.pyc',",
+                "    invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,",
+                ")",
+                "os.remove('weak.py')",
+            ]
+        )
+        script = self.write_agent_script(
+            f"cd \"$6\"\nmkdir -p __pycache__\npython3 - <<'PYEOF'\n{plant}\nPYEOF\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        # The planted bytecode is cleared, so the real seeded test runs.
+        self.assertFalse(result["target_test_passes"])
+        self.assertFalse(result["pre_existing_tests_pass"])
+
     def test_agent_timeout_with_partial_output_still_scores(self):
         # TimeoutExpired output arrives as bytes even with text=True; the
         # partial transcript must still decode, save, and count.
