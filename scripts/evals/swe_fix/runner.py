@@ -64,6 +64,11 @@ def run_command(command: str, cwd: Path, timeout: int = 300) -> dict:
     }
 
 
+def is_interpreter_cache(path: str) -> bool:
+    """Python bytecode caches: mechanical output of the required test run."""
+    return path.startswith("__pycache__/") or path.endswith(".pyc")
+
+
 def repo_changes(repo_dir: Path, initial_sha: str) -> tuple[list[str], list[str]]:
     """Tracked changes against the initial commit, and new (untracked) files.
 
@@ -71,7 +76,9 @@ def repo_changes(repo_dir: Path, initial_sha: str) -> tuple[list[str], list[str]
     restored from the initial tree, the destination is removed. Ignored
     files are included too (no --exclude-standard): an agent-added
     .gitignore must not hide a shadow module from the scoring restore or
-    from the containment report.
+    from the containment report. Interpreter caches are dropped: the rubric
+    requires the agent to run the test command, and its bytecode output is
+    a mechanical byproduct, not an edit.
     """
     tracked = subprocess.run(
         ["git", "diff", "--name-only", "--no-renames", initial_sha],
@@ -89,7 +96,7 @@ def repo_changes(repo_dir: Path, initial_sha: str) -> tuple[list[str], list[str]
     ).stdout
     return (
         [line for line in tracked.splitlines() if line],
-        [line for line in untracked.splitlines() if line],
+        [line for line in untracked.splitlines() if line and not is_interpreter_cache(line)],
     )
 
 

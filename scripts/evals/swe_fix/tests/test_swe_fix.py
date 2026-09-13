@@ -419,6 +419,51 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(result["pre_existing_tests_pass"])
         self.assertEqual(result["extra_changed_files"], ["agent_tests.py", "test_budget.py"])
 
+    def test_correct_fix_with_test_run_resolves(self):
+        # A correct fix must resolve even though the required test run
+        # leaves __pycache__ behind: interpreter caches are the mechanical
+        # byproduct of running the suite, not agent edits.
+        event = json.dumps(
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "id": "c1",
+                            "name": "ipython",
+                            "arguments": {"code": "await bash('python3 -m unittest -v')"},
+                        }
+                    ],
+                },
+            }
+        )
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            'git apply "$(dirname "$0")/golden.patch"\n'
+            "python3 -m unittest -v\n"
+            f"cat <<'EVENTS'\n{event}\nEVENTS\n"
+        )
+        shutil.copy2(FIXTURES / "py-budget" / "golden.patch", script.parent / "golden.patch")
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(result["resolved"])
+        self.assertTrue(result["target_test_passes"])
+        self.assertTrue(result["pre_existing_tests_pass"])
+        self.assertEqual(result["extra_changed_files"], [])
+
     def test_agent_timeout_with_partial_output_still_scores(self):
         # TimeoutExpired output arrives as bytes even with text=True; the
         # partial transcript must still decode, save, and count.
