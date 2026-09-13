@@ -89,12 +89,11 @@ def unhide_index_entries(repo_dir: Path) -> None:
         check=True,
     ).stdout
     paths = [line for line in tracked.splitlines() if line]
-    if paths:
-        subprocess.run(
-            ["git", "update-index", "--no-assume-unchanged", "--no-skip-worktree", "--", *paths],
-            cwd=repo_dir,
-            check=True,
-        )
+    for flag in ("--no-assume-unchanged", "--no-skip-worktree"):
+        # One call per flag: with skip-worktree set, a combined call
+        # leaves the bit on and the edit stays hidden.
+        if paths:
+            subprocess.run(["git", "update-index", flag, "--", *paths], cwd=repo_dir, check=True)
 
 
 def repo_changes(repo_dir: Path, initial_sha: str) -> tuple[list[str], list[str]]:
@@ -158,6 +157,15 @@ def restore_scoring_tree(fixture: dict, repo_dir: Path, initial_sha: str) -> Non
     allowed = set(fixture.get("allowed_files", []))
     tracked, untracked = repo_changes(repo_dir, initial_sha)
     initial_files = initial_tree_files(repo_dir, initial_sha)
+    # An allowed path replaced by a symlink follows an external target, so
+    # the suite could pass without the fixture source being fixed; restore
+    # the pristine source instead of preserving the link.
+    for path in allowed:
+        target = repo_dir / path
+        if target.is_symlink():
+            target.unlink()
+            if path in initial_files:
+                subprocess.run(["git", "checkout", initial_sha, "--", path], cwd=repo_dir, check=True)
     restorable = [path for path in tracked if path not in allowed and path in initial_files]
     added = [path for path in tracked if path not in allowed and path not in initial_files]
     if restorable:
@@ -166,8 +174,13 @@ def restore_scoring_tree(fixture: dict, repo_dir: Path, initial_sha: str) -> Non
         (repo_dir / path).unlink(missing_ok=True)
     # Clear bytecode caches: an UNCHECKED_HASH pyc shadows its source even
     # after restore, and the scored suites recompile whatever they need.
+    # rmtree refuses symlinked directories, so unlink those first or a
+    # planted cache behind the link survives the clear.
     for cache_dir in repo_dir.rglob("__pycache__"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
+        if cache_dir.is_symlink():
+            cache_dir.unlink()
+        else:
+            shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 def fixture_outcome(fixture: dict, workdir: Path, initial_sha: str, agent_log: str) -> dict:

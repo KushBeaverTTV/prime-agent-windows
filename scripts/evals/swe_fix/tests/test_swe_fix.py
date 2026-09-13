@@ -527,6 +527,125 @@ class RunnerTests(unittest.TestCase):
         # The restored suite still fails the seeded bug.
         self.assertFalse(result["target_test_passes"])
 
+    def test_skip_worktree_cannot_hide_test_edits(self):
+        # --skip-worktree hides worktree edits like --assume-unchanged, and
+        # one combined update-index call leaves the bit set, so each flag
+        # must be cleared in its own call.
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            "printf 'import unittest\\n\\nclass AllocateTests(unittest.TestCase):"
+            "\\n    def test_shares_sum_exactly_to_income(self):\\n        pass\\n' > test_budget.py\n"
+            "git update-index --skip-worktree test_budget.py\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        self.assertIn("test_budget.py", result["extra_changed_files"])
+        repo = Path(result["workdir"]) / "repo"
+        self.assertEqual(
+            (repo / "test_budget.py").read_text(),
+            (FIXTURES / "py-budget" / "test_budget.py").read_text(),
+        )
+        self.assertFalse(result["target_test_passes"])
+
+    def test_symlinked_cache_cannot_fake_pass(self):
+        # rmtree refuses to follow a symlinked __pycache__, so a planted
+        # cache behind a symlink survives the clear; unlink the link first.
+        plant = "\n".join(
+            [
+                "import os, sys, py_compile",
+                "source = '''import unittest",
+                "",
+                "class AllocateTests(unittest.TestCase):",
+                "    def test_shares_sum_exactly_to_income(self):",
+                "        pass",
+                "'''",
+                "open('weak.py', 'w').write(source)",
+                "cache = os.path.join(os.environ['AGENT_DIR'], 'ext-cache')",
+                "py_compile.compile(",
+                "    'weak.py',",
+                "    cfile=os.path.join(cache, f'test_budget.{sys.implementation.cache_tag}.pyc'),",
+                "    invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,",
+                ")",
+                "os.remove('weak.py')",
+            ]
+        )
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            'AGENT_DIR="$(dirname "$0")"\n'
+            'mkdir -p "$AGENT_DIR/ext-cache"\n'
+            "AGENT_DIR=\"$AGENT_DIR\" python3 - <<'PYEOF'\n"
+            f"{plant}\n"
+            "PYEOF\n"
+            'ln -s "$AGENT_DIR/ext-cache" __pycache__\n'
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        # The symlinked cache is removed, so the real seeded test runs.
+        self.assertFalse(result["target_test_passes"])
+        self.assertFalse(result["pre_existing_tests_pass"])
+
+    def test_allowed_symlink_cannot_fake_resolution(self):
+        # An allowed path replaced by a symlink follows an external target,
+        # so the suite could pass without the fixture source being fixed;
+        # restore replaces the link with the pristine source.
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            'AGENT_DIR="$(dirname "$0")"\n'
+            'cp budget.py "$AGENT_DIR/budget.py"\n'
+            'cd "$AGENT_DIR"\n'
+            'git apply "$AGENT_DIR/golden.patch"\n'
+            'cd "$6"\n'
+            "rm budget.py\n"
+            'ln -s "$AGENT_DIR/budget.py" budget.py\n'
+        )
+        shutil.copy2(FIXTURES / "py-budget" / "golden.patch", script.parent / "golden.patch")
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        repo = Path(result["workdir"]) / "repo"
+        self.assertFalse((repo / "budget.py").is_symlink())
+        self.assertEqual(
+            (repo / "budget.py").read_text(),
+            (FIXTURES / "py-budget" / "budget.py").read_text(),
+        )
+        # The pristine source still has the seeded bug.
+        self.assertFalse(result["target_test_passes"])
+
     def test_planted_cache_bytecode_cannot_fake_pass(self):
         # An UNCHECKED_HASH pyc in __pycache__ shadows the source even
         # after restore (no source validation), so restore must clear
