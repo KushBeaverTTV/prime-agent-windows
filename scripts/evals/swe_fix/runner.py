@@ -65,8 +65,13 @@ def run_command(command: str, cwd: Path, timeout: int = 300) -> dict:
 
 
 def is_interpreter_cache(path: str) -> bool:
-    """Python bytecode caches: mechanical output of the required test run."""
-    return path.startswith("__pycache__/") or path.endswith(".pyc")
+    """Bytecode inside a __pycache__ directory: the required test run's output.
+
+    Only that layout counts: Python never imports __pycache__ entries
+    without the matching source, while a .pyc sitting where a .py would
+    be is a valid sourceless import and must not be skipped.
+    """
+    return "__pycache__" in path.split("/")
 
 
 def repo_changes(repo_dir: Path, initial_sha: str) -> tuple[list[str], list[str]]:

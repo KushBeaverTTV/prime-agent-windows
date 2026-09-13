@@ -464,6 +464,35 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(result["pre_existing_tests_pass"])
         self.assertEqual(result["extra_changed_files"], [])
 
+    def test_shadow_bytecode_cannot_fake_resolution(self):
+        # A .pyc placed where a .py would be is a valid sourceless import;
+        # the cache filter must skip only __pycache__ bytecode, or this
+        # reopens the shadow-runner bypass in compiled form.
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            "printf 'import sys\\nsys.exit(0)\\n' > shadow_src.py\n"
+            "python3 -c \"import py_compile; py_compile.compile('shadow_src.py', cfile='unittest.pyc')\"\n"
+            "rm shadow_src.py\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        # The planted bytecode is removed, so the seeded bug still fails.
+        self.assertFalse(result["target_test_passes"])
+        self.assertFalse(result["pre_existing_tests_pass"])
+        self.assertIn("unittest.pyc", result["extra_changed_files"])
+
     def test_agent_timeout_with_partial_output_still_scores(self):
         # TimeoutExpired output arrives as bytes even with text=True; the
         # partial transcript must still decode, save, and count.
