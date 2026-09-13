@@ -92,6 +92,36 @@ class RunArbitrationTests(unittest.TestCase):
         ]
         self.assertTrue(github.publish(report_for(CANCELED, "canceled")))
 
+    def test_canceled_workflow_cannot_replace_survivor_with_preserved_artifact_status(self):
+        for artifact_status in ("failed", "partial", "completed"):
+            for survivor_status in ("running", "completed", "partial", "failed"):
+                with self.subTest(artifact=artifact_status, survivor=survivor_status):
+                    github = ArbitrationGitHub()
+                    github.comments = [
+                        {
+                            "id": 2,
+                            "user": {"login": "github-actions[bot]"},
+                            "body": render(report_for(SURVIVOR, survivor_status)),
+                        }
+                    ]
+                    self.assertFalse(github.publish(report_for(CANCELED, artifact_status)))
+                    self.assertEqual(github.writes, [])
+
+    def test_uncanceled_newer_workflow_can_publish_failure_over_survivor(self):
+        for status in ("failed", "partial"):
+            with self.subTest(status=status):
+                github = ArbitrationGitHub()
+                github.runs[0].update(conclusion="failure")
+                github.comments = [
+                    {
+                        "id": 2,
+                        "user": {"login": "github-actions[bot]"},
+                        "body": render(report_for(SURVIVOR, "completed")),
+                    }
+                ]
+                self.assertTrue(github.publish(report_for(CANCELED, status)))
+                self.assertIn(f"run:{CANCELED}:1", github.writes[-1][2]["body"])
+
     def test_active_or_failed_newer_run_still_supersedes(self):
         for status, conclusion in (
             ("queued", None),

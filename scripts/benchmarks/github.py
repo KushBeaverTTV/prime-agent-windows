@@ -133,7 +133,9 @@ class GitHub:
                         ):
                             return False
                         # A late cancellation must not replace the surviving duplicate's report.
-                        if report.status == "canceled" and generation[3] == report.head_sha:
+                        if (
+                            report.status == "canceled" or current.get("conclusion") == "cancelled"
+                        ) and generation[3] == report.head_sha:
                             return False
         body = render(report)
         if comment and comment["body"] == body:
