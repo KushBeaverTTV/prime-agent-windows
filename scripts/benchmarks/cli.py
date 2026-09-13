@@ -69,9 +69,30 @@ def completed_report(result_path: Path, request_path: Path, run: dict) -> Report
     return report
 
 
+def prepare_request(
+    github: GitHub, source: Report, run_id: int, attempt: int, source_attempt: int, harness_sha: str
+) -> tuple[Report, str]:
+    if (
+        source.repository != github.repository
+        or source.run_id != run_id
+        or source.attempt != source_attempt
+        or not 1 <= source_attempt <= attempt
+        or source.harness_sha != harness_sha
+        or source.status != "running"
+    ):
+        raise ValueError("Benchmark request does not match the execution context")
+    resolved, author = github.resolve(source.pr, harness_sha, run_id, attempt, source.config)
+    report = source if source_attempt == attempt else resolved
+    if not github.fresh(report):
+        raise ValueError("Benchmark execution has been superseded; rerun the latest request")
+    return report, author
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("resolve", "run", "publish", "finalize", "cleanup", "local"))
+    parser.add_argument(
+        "command", choices=("resolve", "prepare", "run", "publish", "finalize", "cleanup", "local")
+    )
     parser.add_argument("--results", type=Path, default=Path("results"))
     parser.add_argument("--request", type=Path, default=Path("request/report.json"))
     parser.add_argument("--base")
@@ -111,6 +132,19 @@ def main() -> None:
         print(f"Cleaned up {len(deleted)} remaining benchmark sandboxes")
         return
     github = GitHub(repository)
+    if args.command == "prepare":
+        report, author = prepare_request(
+            github,
+            load_report(args.request),
+            int(os.environ["GITHUB_RUN_ID"]),
+            int(os.environ["GITHUB_RUN_ATTEMPT"]),
+            int(os.environ["BENCHMARK_REQUEST_ATTEMPT"]),
+            os.environ["BENCHMARK_HARNESS_SHA"],
+        )
+        write_json(args.results / "report.json", report)
+        with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+            output.write(f"author={author}\n")
+        return
     if args.command == "resolve":
         pr = int(event.get("pull_request", {}).get("number") or event["inputs"]["pr"])
         if pr <= 0:

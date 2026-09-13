@@ -8,6 +8,21 @@ Identical automatic requests reuse the completed comment when both SHAs, harness
 match. Manual dispatch and GitHub reruns force fresh measurements. Unvouched authors
 receive a pending-trust comment; a maintainer can rerun after vouching.
 
+Each benchmark execution downloads the request job's recorded attempt, validates its run and trusted
+harness identity, and saves `benchmark-execution-request-<attempt>` before allocating compute. When
+only the benchmark job is retried, preparation resolves a fresh current-main/PR comparison for the
+new attempt and repeats contributor trust checks. It does not relabel the old request or reuse old
+measurements. The finalizer prefers this execution request and validates results against its identity;
+the same-attempt original request remains the fallback when preparation never finished. Expired or
+invalid request artifacts fail before allocation.
+
+For runs created before this retry handling landed, use **Re-run all jobs**, not **Re-run failed jobs**
+or a benchmark-only retry. A child-only attempt increments `run_attempt` without recreating the
+upstream request artifact. GitHub also refuses to rerun an upstream job that exists only in an older
+attempt (`Only jobs from current attempt can be re-run`), so recovery then requires the whole workflow.
+Recheck that the run still represents the latest open PR head before retrying. Reruns retain the
+original workflow/harness revision; a new manual dispatch on main is needed to use a newly landed harness.
+
 The controller resolves current `main` and the PR head to full SHAs, builds both in separate Prime
 sandboxes, and alternates their measurements. Both use the same trusted harness revision, image
 digest and resource allocation. Performance changes are informational, not a regression gate. Failed or
