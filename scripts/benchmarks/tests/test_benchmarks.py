@@ -283,6 +283,8 @@ class FakeGitHub(GitHub):
             return {"object": {"sha": self.main_sha}}
         if path == "actions/runs/100":
             return {"run_attempt": self.attempt, "run_number": 10}
+        if path in ("actions/runs/99", "actions/runs/101"):
+            return {"run_attempt": 1, "run_number": int(path.rsplit("/", 1)[1]) - 90}
         raise AssertionError(path)
 
     def pages(self, path, key=None):

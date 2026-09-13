@@ -139,7 +139,10 @@ The main workflow posts a single marked comment and updates it in place. A new p
 previous table with a short running notice and a link to the latest run. The completion workflow
 fills that same comment with the latest results or a cancellation/failure notice. Previous results
 remain available in workflow artifacts. Publishers serialize by PR and check the
-current head, latest run ID, attempt, and existing comment generation before writing. A rerun of an
+current head, workflow run number, attempt, and existing comment generation before writing. Canceled
+duplicates do not supersede a surviving run. Its result can replace the canceled duplicate's comment;
+a late cancellation cannot replace that survivor's report for the same head. Non-canceled newer runs
+still supersede older work, and incomplete measurements still fail the command. A rerun of an
 older commit cannot overwrite a newer result, including when the newer run has the same head SHA.
 
 Results and logs are retained as GitHub artifacts for 14 days. They include exact source and harness

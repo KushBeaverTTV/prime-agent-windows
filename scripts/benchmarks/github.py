@@ -78,6 +78,7 @@ class GitHub:
         for runs in self.pages(f"actions/workflows/{WORKFLOW}/runs", "workflow_runs"):
             if any(
                 candidate["display_title"] == f"{TITLE}{report.pr}"
+                and candidate.get("conclusion") != "cancelled"
                 and (candidate["run_number"], candidate["run_attempt"]) > (run["run_number"], report.attempt)
                 for candidate in runs
             ):
@@ -108,8 +109,32 @@ class GitHub:
         comment = self.comment(report.pr)
         if comment:
             generation = GENERATION.search(comment["body"])
-            if generation and tuple(map(int, generation.groups()[:2])) > (report.run_id, report.attempt):
-                return False
+            if generation:
+                previous_id, previous_attempt = map(int, generation.groups()[:2])
+                if previous_id == report.run_id:
+                    if previous_attempt > report.attempt:
+                        return False
+                else:
+                    previous = self.request("GET", f"actions/runs/{previous_id}")
+                    current = self.request("GET", f"actions/runs/{report.run_id}")
+                    if previous.get("conclusion") != "cancelled" and (
+                        previous["run_number"],
+                        previous["run_attempt"],
+                    ) > (current["run_number"], report.attempt):
+                        return False
+                    if previous["run_attempt"] != previous_attempt:
+                        previous = self.request(
+                            "GET", f"actions/runs/{previous_id}/attempts/{previous_attempt}"
+                        )
+                    if previous.get("conclusion") != "cancelled":
+                        if (previous["run_number"], previous_attempt) > (
+                            current["run_number"],
+                            report.attempt,
+                        ):
+                            return False
+                        # A late cancellation must not replace the surviving duplicate's report.
+                        if report.status == "canceled" and generation[3] == report.head_sha:
+                            return False
         body = render(report)
         if comment and comment["body"] == body:
             return False
