@@ -300,6 +300,64 @@ class RunnerTests(unittest.TestCase):
         # budget.py is allowed; only the untracked scratch file is extra.
         self.assertEqual(result["extra_changed_files"], ["newfile.txt"])
 
+    def test_staged_added_file_restored_without_crash(self):
+        # A staged new file is absent from the initial tree, so
+        # `git checkout initial -- path` fails for it; restore must remove
+        # it rather than abort the run with no scored result.
+        script = self.write_agent_script(
+            "cd \"$6\"\nprintf 'import sys\\nsys.exit(0)\\n' > unittest.py\ngit add unittest.py\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        # The staged shadow runner is removed, so the seeded bug still fails.
+        self.assertFalse(result["target_test_passes"])
+        self.assertIn("unittest.py", result["extra_changed_files"])
+
+    def test_committed_added_file_restored_without_crash(self):
+        # Same for a file the agent committed, nested in a new directory:
+        # restore removes it and still reverts modified tracked files.
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            "mkdir scratch\n"
+            "echo note > scratch/notes.txt\n"
+            "echo '# agent edit' >> test_budget.py\n"
+            "git add -A\n"
+            "git -c commit.gpgsign=false -c user.email=agent@e -c user.name=agent commit -qm agent\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        repo = Path(result["workdir"]) / "repo"
+        self.assertFalse((repo / "scratch" / "notes.txt").exists())
+        self.assertEqual(
+            (repo / "test_budget.py").read_text(),
+            (FIXTURES / "py-budget" / "test_budget.py").read_text(),
+        )
+        self.assertEqual(result["extra_changed_files"], ["scratch/notes.txt", "test_budget.py"])
+
     def test_agent_timeout_with_partial_output_still_scores(self):
         # TimeoutExpired output arrives as bytes even with text=True; the
         # partial transcript must still decode, save, and count.

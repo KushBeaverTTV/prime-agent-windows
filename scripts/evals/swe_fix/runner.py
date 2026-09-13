@@ -86,6 +86,18 @@ def repo_changes(repo_dir: Path, initial_sha: str) -> tuple[list[str], list[str]
     )
 
 
+def initial_tree_files(repo_dir: Path, initial_sha: str) -> set[str]:
+    """Paths present in the initial commit's tree."""
+    listing = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "-z", initial_sha],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return {path for path in listing.split("\0") if path}
+
+
 def restore_scoring_tree(fixture: dict, repo_dir: Path, initial_sha: str) -> None:
     """Revert every change outside allowed_files, including new files.
 
@@ -93,15 +105,21 @@ def restore_scoring_tree(fixture: dict, repo_dir: Path, initial_sha: str) -> Non
     plus the agent's allowed edits, so edited tests or agent-added shadow
     runners (for example a repo-level unittest.py) cannot mask a failed
     fix.
+
+    A path the agent added (staged, committed, or the new side of a
+    rename) is absent from the initial tree, and `git checkout initial --
+    path` fails for such paths, so they are removed from the worktree
+    instead of being checked out.
     """
     allowed = set(fixture.get("allowed_files", []))
     tracked, untracked = repo_changes(repo_dir, initial_sha)
-    reverted = [path for path in tracked if path not in allowed]
-    if reverted:
-        subprocess.run(["git", "checkout", initial_sha, "--", *reverted], cwd=repo_dir, check=True)
-    for path in untracked:
-        if path not in allowed:
-            (repo_dir / path).unlink(missing_ok=True)
+    initial_files = initial_tree_files(repo_dir, initial_sha)
+    restorable = [path for path in tracked if path not in allowed and path in initial_files]
+    added = [path for path in tracked if path not in allowed and path not in initial_files]
+    if restorable:
+        subprocess.run(["git", "checkout", initial_sha, "--", *restorable], cwd=repo_dir, check=True)
+    for path in added + [path for path in untracked if path not in allowed]:
+        (repo_dir / path).unlink(missing_ok=True)
 
 
 def fixture_outcome(fixture: dict, workdir: Path, initial_sha: str, agent_log: str) -> dict:
