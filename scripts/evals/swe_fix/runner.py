@@ -65,16 +65,23 @@ def run_command(command: str, cwd: Path, timeout: int = 300) -> dict:
 
 
 def repo_changes(repo_dir: Path, initial_sha: str) -> tuple[list[str], list[str]]:
-    """Tracked changes against the initial commit, and untracked (new) files."""
+    """Tracked changes against the initial commit, and new (untracked) files.
+
+    Rename detection is off so a rename lists both sides: the source is
+    restored from the initial tree, the destination is removed. Ignored
+    files are included too (no --exclude-standard): an agent-added
+    .gitignore must not hide a shadow module from the scoring restore or
+    from the containment report.
+    """
     tracked = subprocess.run(
-        ["git", "diff", "--name-only", initial_sha],
+        ["git", "diff", "--name-only", "--no-renames", initial_sha],
         cwd=repo_dir,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
     untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
+        ["git", "ls-files", "--others"],
         cwd=repo_dir,
         capture_output=True,
         text=True,

@@ -358,6 +358,67 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(result["extra_changed_files"], ["scratch/notes.txt", "test_budget.py"])
 
+    def test_ignored_shadow_runner_cannot_fake_resolution(self):
+        # The agent .gitignores its shadow runner; --exclude-standard would
+        # omit it from the untracked listing, so restore must enumerate
+        # ignored files too or the shadow survives into scoring.
+        script = self.write_agent_script(
+            "cd \"$6\"\nprintf 'import sys\\nsys.exit(0)\\n' > unittest.py\necho unittest.py > .gitignore\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        # The ignored shadow runner is removed, so the seeded bug still fails.
+        self.assertFalse(result["target_test_passes"])
+        self.assertFalse(result["pre_existing_tests_pass"])
+        # Both the shadow and the .gitignore hiding it are reported.
+        self.assertEqual(result["extra_changed_files"], [".gitignore", "unittest.py"])
+
+    def test_renamed_fixture_file_restored(self):
+        # Default rename detection lists only the rename destination, so the
+        # source would stay missing from the scoring tree; restore must
+        # revert both sides of the rename.
+        script = self.write_agent_script(
+            'cd "$6"\n'
+            "git mv test_budget.py agent_tests.py\n"
+            "git -c commit.gpgsign=false -c user.email=agent@e -c user.name=agent commit -qm rename\n"
+        )
+        argv = [
+            "--fixture",
+            str(FIXTURES / "py-budget"),
+            "--model",
+            "test/fake",
+            "--agent-bin",
+            str(script),
+            "--timeout",
+            "10",
+        ]
+        exit_code, result = self.run_runner(argv)
+        self.addCleanup(shutil.rmtree, result["workdir"], ignore_errors=True)
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(result["resolved"])
+        repo = Path(result["workdir"]) / "repo"
+        self.assertFalse((repo / "agent_tests.py").exists())
+        self.assertEqual(
+            (repo / "test_budget.py").read_text(),
+            (FIXTURES / "py-budget" / "test_budget.py").read_text(),
+        )
+        # The suite runs the restored pristine tests, so the seeded bug fails.
+        self.assertFalse(result["target_test_passes"])
+        self.assertFalse(result["pre_existing_tests_pass"])
+        self.assertEqual(result["extra_changed_files"], ["agent_tests.py", "test_budget.py"])
+
     def test_agent_timeout_with_partial_output_still_scores(self):
         # TimeoutExpired output arrives as bytes even with text=True; the
         # partial transcript must still decode, save, and count.
