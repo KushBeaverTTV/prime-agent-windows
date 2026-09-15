@@ -92,6 +92,21 @@ describe.runIf(process.platform !== "win32")("daemon state root scoping", () => 
 		expect(createDaemonStateRootMatcher(root)(join(base, "stranger.sock"))).toBe(false);
 	});
 
+	// A supervisor that has handed its runtime to a successor is no longer the
+	// registered owner, so only the OS socket sweep can still see it. It must stay
+	// in scope or `shutdown --force` leaks it, which is the ENG-4603 regression.
+	it("claims a hidden unregistered supervisor whose socket sits in our agent dir", () => {
+		const { root } = createRoot();
+		const belongsToStateRoot = createDaemonStateRootMatcher(root);
+		expect(belongsToStateRoot(join(root.agentDir, "daemon.sock"))).toBe(true);
+		expect(belongsToStateRoot(join(root.agentDir, "nested", "worker-command.sock"))).toBe(true);
+	});
+
+	it("does not mistake an agent dir with a shared name prefix for our own", () => {
+		const { root, base } = createRoot();
+		expect(createDaemonStateRootMatcher(root)(join(`${base}/agent-other`, "daemon.sock"))).toBe(false);
+	});
+
 	it("still answers when the registry does not exist yet", () => {
 		const { root, base } = createRoot();
 		rmSync(root.socketDir, { recursive: true, force: true });
