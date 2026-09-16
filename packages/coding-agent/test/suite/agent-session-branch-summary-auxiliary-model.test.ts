@@ -46,6 +46,9 @@ function summaryCalls() {
 /** Session-model context window and branch-summary reserve, as the call site resolves them. */
 const SESSION_CONTEXT_WINDOW = 128000;
 const BRANCH_SUMMARY_RESERVE_TOKENS = 16384;
+/** Completion budget generateBranchSummary requests, and the system prompt it sends. */
+const BRANCH_SUMMARY_COMPLETION_BUDGET = 2048;
+const SUMMARIZATION_SYSTEM_TOKENS = Math.ceil(SUMMARIZATION_SYSTEM_PROMPT.length / 4);
 
 describe("AgentSession branch summary auxiliary model", () => {
 	const harnesses: Harness[] = [];
@@ -98,6 +101,14 @@ describe("AgentSession branch summary auxiliary model", () => {
 	/** ~13k characters per turn, so the summary request outgrows a 8192-token window. */
 	function longTurnText(): string {
 		return "long branch turn text ".repeat(600);
+	}
+
+	/**
+	 * ~112k characters -> ~28k prompt tokens: one reply this long lands a 33000
+	 * token auxiliary window inside the fit band (below).
+	 */
+	function longReplyText(): string {
+		return "long branch reply text ".repeat(5090);
 	}
 
 	/**
@@ -233,6 +244,47 @@ describe("AgentSession branch summary auxiliary model", () => {
 		}
 	}, 60000);
 
+	it("falls back to the session model when the auxiliary window holds the request but not the input slice and its reserve", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const harness = await createBranchSummaryHarness({
+				auxiliaryModel: "faux/aux-model",
+				auxContextWindow: 33000,
+			});
+			harness.setResponses([fauxAssistantMessage(longReplyText())]);
+			await harness.session.prompt("short prompt");
+
+			// The dangerous band: a 33000-token window accepts the request body the
+			// session model would send, but not the input slice plus the reserve the
+			// branch call subtracts. Routing there shrinks the slice until nothing
+			// survives and writes the "No content to summarize" stub instead.
+			const entries = harness.sessionManager.getEntries();
+			const requestSize = estimateBranchSummaryRequestTokens(entries, {
+				contextWindow: SESSION_CONTEXT_WINDOW,
+				reserveTokens: 0,
+			});
+			const promptTokens = requestSize - SUMMARIZATION_SYSTEM_TOKENS - BRANCH_SUMMARY_COMPLETION_BUDGET;
+			expect(requestSize).toBeLessThan(33000);
+			expect(promptTokens + BRANCH_SUMMARY_RESERVE_TOKENS).toBeGreaterThan(33000);
+
+			const result = await navigateToRootWithSummary(harness);
+
+			const calls = summaryCalls();
+			expect(calls.length).toBeGreaterThan(0);
+			for (const call of calls) {
+				expect(call[0]).toMatchObject({ provider: "faux", id: "session-model" });
+			}
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			const [message] = warnSpy.mock.calls[0];
+			expect(message).toContain('auxiliaryModel "faux/aux-model" unusable for branch summary');
+			// The real summary lands: the aux budget would have kept no entry at all.
+			expect(result.summaryEntry?.summary).not.toContain("No content to summarize");
+			expect(result.summaryEntry?.summary).toContain("Test summary");
+		} finally {
+			warnSpy.mockRestore();
+		}
+	}, 60000);
+
 	it("never requests thinking on branch summary calls", async () => {
 		// Branch summaries are transcription, not reasoning: no reasoning option is
 		// ever passed, even when the session model reasons and a level is selected.
@@ -316,6 +368,33 @@ describe("estimateBranchSummaryRequestTokens", () => {
 		];
 		expect(estimateBranchSummaryRequestTokens(invisible, { contextWindow: SESSION_CONTEXT_WINDOW })).toBe(0);
 	});
+
+	it("counts the instructions the call site forwards", async () => {
+		const { entries } = await twoTurnEntries();
+		const base = estimateBranchSummaryRequestTokens(entries, {
+			contextWindow: SESSION_CONTEXT_WINDOW,
+			reserveTokens: BRANCH_SUMMARY_RESERVE_TOKENS,
+		});
+		const focus = "focus on the parser refactor ".repeat(40);
+		expect(
+			estimateBranchSummaryRequestTokens(entries, {
+				contextWindow: SESSION_CONTEXT_WINDOW,
+				reserveTokens: BRANCH_SUMMARY_RESERVE_TOKENS,
+				customInstructions: focus,
+			}),
+		).toBeGreaterThan(base);
+		// The replacement form swaps the default prompt for the custom text, so a
+		// longer replacement must grow the request too.
+		const replacement = "replacement instructions ".repeat(120);
+		expect(
+			estimateBranchSummaryRequestTokens(entries, {
+				contextWindow: SESSION_CONTEXT_WINDOW,
+				reserveTokens: BRANCH_SUMMARY_RESERVE_TOKENS,
+				customInstructions: replacement,
+				replaceInstructions: true,
+			}),
+		).toBeGreaterThan(base);
+	}, 60000);
 
 	function longTurnText(): string {
 		return "long branch turn text ".repeat(600);

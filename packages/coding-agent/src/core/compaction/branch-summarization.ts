@@ -248,7 +248,16 @@ Use this EXACT format:
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
 /** Completion budget for the branch summary wire call. */
-export const BRANCH_SUMMARY_MAX_TOKENS = 2048;
+const BRANCH_SUMMARY_MAX_TOKENS = 2048;
+
+/**
+ * Input-token budget the summarizer keeps: entries that do not fit the model's
+ * window after the reserve are dropped. Shared by `generateBranchSummary` and
+ * `estimateBranchSummaryRequestTokens` so both slice with the same budget.
+ */
+function branchSummaryTokenBudget(contextWindow: number | undefined, reserveTokens: number): number {
+	return (contextWindow || 128000) - reserveTokens;
+}
 
 /**
  * Build the summarizer prompt for a serialized branch: the conversation in its
@@ -293,8 +302,7 @@ export async function generateBranchSummary(
 		retry,
 		reserveTokens = 16384,
 	} = options;
-	const contextWindow = model.contextWindow || 128000;
-	const tokenBudget = contextWindow - reserveTokens;
+	const tokenBudget = branchSummaryTokenBudget(model.contextWindow, reserveTokens);
 
 	const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget);
 
@@ -357,14 +365,17 @@ export interface EstimateBranchSummaryRequestTokensOptions {
 }
 
 /**
- * Estimate the context window the branch summary needs for the wire request
- * `generateBranchSummary` builds, using the chars/4 heuristic this module
- * already uses for pre-LLM token math. Mirrors the exact request body:
- * SUMMARIZATION_SYSTEM_PROMPT, the serialized branch inside its
- * `<conversation>` wrapper, and the completion budget. A model whose window is
- * smaller than this cannot run the summary without failing over-limit or
- * dropping branch context, so routing must fall back to the session model.
- * 0 means the branch leaves nothing model-visible and no request is issued.
+ * Estimate the context window the branch summary needs, using the chars/4
+ * heuristic this module already uses for pre-LLM token math. A model must hold
+ * two things: the request body `generateBranchSummary` builds
+ * (SUMMARIZATION_SYSTEM_PROMPT, the serialized branch inside its
+ * `<conversation>` wrapper, and the completion budget) and the reserve the
+ * branch call subtracts from its window via `branchSummaryTokenBudget`. The
+ * window also sizes the input slice, so a model that covers only the request
+ * body drops the oldest entries - or every entry, turning the summary into a
+ * "No content to summarize" stub - instead of running the request the session
+ * model would have run. 0 means the branch leaves nothing model-visible and no
+ * request is issued.
  */
 export function estimateBranchSummaryRequestTokens(
 	entries: SessionEntry[],
@@ -372,7 +383,7 @@ export function estimateBranchSummaryRequestTokens(
 ): number {
 	const { contextWindow, reserveTokens = 16384, customInstructions, replaceInstructions } = options;
 	// Mirrors generateBranchSummary: the same budget decides which entries fit.
-	const tokenBudget = (contextWindow || 128000) - reserveTokens;
+	const tokenBudget = branchSummaryTokenBudget(contextWindow, reserveTokens);
 	const { messages } = prepareBranchEntries(entries, tokenBudget);
 	// generateBranchSummary answers "No content to summarize" without a wire call.
 	if (messages.length === 0) {
@@ -383,7 +394,11 @@ export function estimateBranchSummaryRequestTokens(
 		customInstructions,
 		replaceInstructions,
 	);
-	return (
-		Math.ceil(SUMMARIZATION_SYSTEM_PROMPT.length / 4) + Math.ceil(promptText.length / 4) + BRANCH_SUMMARY_MAX_TOKENS
+	const promptTokens = Math.ceil(promptText.length / 4);
+	// The completion budget and the input slice reserve are separate draws on the
+	// same window, so the larger of the two decides whether the model fits.
+	return Math.max(
+		Math.ceil(SUMMARIZATION_SYSTEM_PROMPT.length / 4) + promptTokens + BRANCH_SUMMARY_MAX_TOKENS,
+		promptTokens + reserveTokens,
 	);
 }
