@@ -1,7 +1,7 @@
 """Launch hosted Prime Evals runs for the Short SWE suite and collect their episodes.
 
 The workflow builds the candidate tarballs, uploads them as GitHub Actions
-artifacts, and uses this script to launch one hosted evaluation per side and
+artifacts, and uses this script to launch one hosted evaluation per configured side and
 taskset with the artifact delivered through `custom_secrets`. Each hosted run
 executes the private `short-swe-*` Environments Hub packages; their episodes are
 pulled back into local `traces.jsonl` files and validated by the same
@@ -58,7 +58,8 @@ def launch(args: argparse.Namespace) -> None:
     runs: dict[str, dict] = {}
     logs = Path(args.output) / "launch-logs"
     logs.mkdir(parents=True, exist_ok=True)
-    for side in ("base", "head"):
+    sides = tuple(sources)
+    for side in sides:
         for taskset_id, environment in HOSTED_ENVIRONMENTS.items():
             source = sources[side]
             secrets = {
