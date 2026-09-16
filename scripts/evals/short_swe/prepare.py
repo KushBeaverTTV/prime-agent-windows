@@ -190,126 +190,13 @@ def validate_manifest(manifest: dict) -> None:
         raise ValueError("Short SWE task keys must be 28 unique names")
 
 
+def config_text(item: dict) -> str:
+    """Minimal TOML: the hosted flow globs these file stems, never their content."""
+    return f"id = {json.dumps(item['id'])}\n"
+
+
 def toml_array(values: list[str]) -> str:
     return "[" + ", ".join(json.dumps(value) for value in values) + "]"
-
-
-def artifact_checksums(artifacts: Path, commit: str) -> dict[str, str]:
-    manifest = json.loads((artifacts / "artifact-manifest.json").read_text())
-    records = manifest.get("artifacts") if manifest.get("sha") == commit else None
-    if not isinstance(records, list) or len(records) != 4:
-        raise ValueError("artifact manifest does not match the evaluated revision")
-    checksums = {record.get("name"): record.get("sha256") for record in records}
-    if set(checksums) != CANDIDATE_TARBALLS or any(
-        not isinstance(value, str) or not DIGEST_RE.fullmatch(value) for value in checksums.values()
-    ):
-        raise ValueError("artifact manifest has invalid checksums")
-    return checksums
-
-
-def toml_table(values: dict[str, str]) -> str:
-    entries = ", ".join(f"{json.dumps(key)} = {json.dumps(value)}" for key, value in values.items())
-    return "{ " + entries + " }"
-
-
-def config_text(
-    item: dict,
-    manifest: dict,
-    artifacts: Path,
-    commit: str,
-    checksums: dict[str, str] | None = None,
-) -> str:
-    lines = [
-        f"model = {json.dumps(manifest['model'])}",
-        f"num_rollouts = {manifest['num_rollouts']}",
-        f"max_concurrent = {manifest['max_concurrent']}",
-        "",
-    ]
-    if item["id"] == "swebench-verified":
-        lines.extend(
-            [
-                "[env]",
-                'id = "secure_harbor"',
-                "",
-                "[env.timeout]",
-                f"finalize = {manifest['limits']['rollout_timeout_seconds']}",
-                "",
-                "[env.verifier]",
-                "retries = 0",
-                "",
-                "[env.verifier.runtime]",
-                'type = "prime"',
-                "allow = []",
-                "vm = true",
-                "labels = "
-                + toml_array(
-                    [
-                        "prime-agent-behavioral-v1",
-                        f"repository:{os.environ.get('GITHUB_REPOSITORY', 'local/local')}",
-                        f"run:{os.environ.get('GITHUB_RUN_ID', 'local')}",
-                        f"attempt:{os.environ.get('GITHUB_RUN_ATTEMPT', 'local')}",
-                        "role:verifier",
-                    ]
-                ),
-                "",
-            ]
-        )
-    lines.extend(
-        [
-            "[env.agent]",
-            f"max_turns = {manifest['limits']['max_turns']}",
-            f"max_output_tokens = {manifest['limits']['max_output_tokens']}",
-            f"max_total_tokens = {manifest['limits']['max_total_tokens']}",
-            "",
-            "[env.agent.timeout]",
-            f"rollout = {manifest['limits']['rollout_timeout_seconds']}",
-            *(
-                [f"scoring = {manifest['limits']['rollout_timeout_seconds']}"]
-                if item["id"] == "swebench-verified"
-                else []
-            ),
-            "",
-            "[env.taskset]",
-            f"id = {json.dumps(item['id'])}",
-        ]
-    )
-    if item["id"] in {"swebench-verified", "swebench-pro"}:
-        lines.append(f"tasks = {toml_array(item['tasks'])}")
-    else:
-        wanted = repr(tuple(item["tasks"]))
-        expression = f'lambda row: row["instance_id"] in {wanted}'
-        lines.extend(
-            [
-                f"filter_fn = {json.dumps(expression)}",
-                f"filter_unavailable_images = {str(item['filter_unavailable_images']).lower()}",
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            "[env.agent.harness]",
-            'id = "prime-agent-candidate"',
-            f"artifact_dir = {json.dumps(str(artifacts.resolve()))}",
-            f"commit = {json.dumps(commit)}",
-            *([f"checksums = {toml_table(checksums)}"] if checksums is not None else []),
-            "autonomous = false",
-            "",
-            "[env.agent.runtime]",
-            'type = "prime"',
-            "allow = []",
-            "labels = "
-            + toml_array(
-                [
-                    "prime-agent-behavioral-v1",
-                    f"repository:{os.environ.get('GITHUB_REPOSITORY', 'local/local')}",
-                    f"run:{os.environ.get('GITHUB_RUN_ID', 'local')}",
-                    f"attempt:{os.environ.get('GITHUB_RUN_ATTEMPT', 'local')}",
-                    "role:task",
-                ]
-            ),
-        ]
-    )
-    return "\n".join(lines) + "\n"
 
 
 def oracle_config_text(manifest: dict) -> str:
@@ -399,17 +286,11 @@ def main() -> None:
     pin_taskset_sources(manifest, args.verifiers, args.environments)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "oracle.toml").write_text(oracle_config_text(manifest))
-    for side, artifacts, commit in (
-        ("base", args.base_artifacts, args.base_sha),
-        ("head", args.head_artifacts, args.head_sha),
-    ):
+    for side in ("base", "head"):
         target = args.output / side
         target.mkdir(parents=True, exist_ok=True)
-        checksums = artifact_checksums(artifacts, commit)
         for item in manifest["tasksets"]:
-            (target / f"{item['id']}.toml").write_text(
-                config_text(item, manifest, artifacts, commit, checksums)
-            )
+            (target / f"{item['id']}.toml").write_text(config_text(item))
 
 
 if __name__ == "__main__":

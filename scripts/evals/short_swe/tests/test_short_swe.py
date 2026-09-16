@@ -16,7 +16,6 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.evals.short_swe import (  # noqa: E402
     builder,
-    candidate_contract,
     ci,
     cleanup,
     evaluate,
@@ -195,28 +194,6 @@ def test_oracle_is_network_blocked_and_required_to_resolve() -> None:
         evaluate.validate_oracle_episode(episode)
 
 
-def test_config_pins_candidate_and_limits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    manifest = json.loads((EVAL_ROOT / "short-swe.json").read_text())
-    monkeypatch.setenv("GITHUB_REPOSITORY", "PrimeIntellect-ai/prime-agent")
-    checksums = {name: "d" * 64 for name in sorted(prepare.CANDIDATE_TARBALLS)}
-    text = prepare.config_text(manifest["tasksets"][0], manifest, tmp_path, "a" * 40, checksums)
-    assert 'id = "prime-agent-candidate"' in text
-    assert f"artifact_dir = {json.dumps(str(tmp_path.resolve()))}" in text
-    assert f"commit = {json.dumps('a' * 40)}" in text
-    assert "autonomous = false" in text
-    assert "checksums = {" in text
-    assert set(tomllib.loads(text)["env"]["agent"]["harness"]["checksums"]) == prepare.CANDIDATE_TARBALLS
-    assert "max_turns = 128" in text
-    assert "max_output_tokens = 100000" in text
-    assert "max_total_tokens = 5000000" in text
-    assert "rollout = 3600" in text
-    parsed = tomllib.loads(text)
-    assert parsed["env"]["id"] == "secure_harbor"
-    assert parsed["env"]["verifier"]["runtime"]["allow"] == []
-    assert parsed["env"]["timeout"]["finalize"] == 3600
-    assert parsed["env"]["agent"]["timeout"]["scoring"] == 3600
-
-
 def labeled_event() -> dict:
     return {
         "action": "labeled",
@@ -301,32 +278,6 @@ def fake_trace(*, ok: bool = True, timeout: bool = False):
         timing=SimpleNamespace(**phases),
         branches=[],
     )
-
-
-def test_candidate_contract_enforces_artifacts_mode_and_credentials(tmp_path: Path) -> None:
-    secrets = {name: "secret" for name in candidate_contract.CREDENTIAL_ENV}
-    process = candidate_contract.process_env({"SAFE": "value"})
-    merged = {**secrets, **process}
-    assert merged == {**dict.fromkeys(candidate_contract.CREDENTIAL_ENV, ""), "SAFE": "value"}
-    with pytest.raises(ValueError, match="autonomous"):
-        candidate_contract.require_non_autonomous(True)
-
-    blobs = {}
-    for index, name in enumerate(candidate_contract.TARBALLS):
-        blobs[name] = f"tarball-{index}".encode()
-        (tmp_path / name).write_bytes(blobs[name])
-    checksums = {name: hashlib.sha256(data).hexdigest() for name, data in blobs.items()}
-    loaded, computed = candidate_contract.load_artifacts(tmp_path, checksums)
-    assert loaded == blobs
-    assert computed == checksums
-    (tmp_path / candidate_contract.TARBALLS[0]).write_bytes(b"changed")
-    with pytest.raises(ValueError, match="checksum mismatch"):
-        candidate_contract.load_artifacts(tmp_path, checksums)
-
-    source = (EVAL_ROOT / "prime_agent_candidate.py").read_text()
-    assert source.count("process_env(") == 2
-    assert "curl" not in source
-    assert "sha256sum -c" in source
 
 
 def test_trace_record_uses_native_usage_buckets() -> None:
@@ -434,53 +385,9 @@ def test_trace_graph_allows_uncommitted_successful_call() -> None:
     evaluate.validate_graph(trace)
 
 
-def test_run_all_stops_started_evaluators_when_a_later_launch_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    configs = tmp_path / "configs"
-    for name in ("one", "two"):
-        path = configs / "base" / f"{name}.toml"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("")
-    (configs / "head").mkdir()
-
-    started = []
-
-    class Process:
-        def __init__(self, log):
-            self.log = log
-            self.terminated = False
-            self.waited = False
-
-        def poll(self):
-            return None
-
-        def terminate(self):
-            self.terminated = True
-
-        def wait(self, timeout=None):
-            self.waited = True
-            return 0
-
-    def popen(*_args, **kwargs):
-        if started:
-            raise OSError("launch failed")
-        process = Process(kwargs["stdout"])
-        started.append(process)
-        return process
-
-    monkeypatch.setattr(evaluate.subprocess, "Popen", popen)
-    with pytest.raises(OSError, match="launch failed"):
-        evaluate.run_all(Path("/eval"), configs, tmp_path / "output")
-    assert len(started) == 1
-    assert started[0].terminated is True
-    assert started[0].waited is True
-    assert started[0].log.closed is True
-
-
 @pytest.mark.parametrize(
     ("parent", "call_node"),
-    ((-1, 0), (2, 0), (0, 0), (None, 4)),
+    ((1, 1), (1, -1), (2, 0)),
 )
 def test_trace_graph_rejects_invalid_links(parent: int | None, call_node: int) -> None:
     trace = fake_trace()

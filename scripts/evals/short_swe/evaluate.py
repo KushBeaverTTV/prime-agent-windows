@@ -216,68 +216,6 @@ def run_oracle(executable: Path, config: Path, output: Path) -> None:
     validate_oracle_episode(episodes[0])
 
 
-def run_all(executable: Path, configs: Path, output: Path) -> dict[str, list[dict]]:
-    environment = {**os.environ, "PYTHONPATH": str(ROOT)}
-    processes = {}
-    output.mkdir(parents=True, exist_ok=True)
-    try:
-        for side in ("base", "head"):
-            for config in sorted((configs / side).glob("*.toml")):
-                target = output / side / config.stem
-                target.mkdir(parents=True)
-                log = (target / "eval.log").open("w")
-                command = [
-                    str(executable),
-                    "@",
-                    str(config),
-                    "--output-dir",
-                    str(target),
-                    "--no-push",
-                ]
-                try:
-                    process = subprocess.Popen(
-                        command,
-                        env=environment,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                    )
-                except BaseException:
-                    log.close()
-                    raise
-                processes[(side, config.stem)] = (process, log)
-    except BaseException:
-        for process, _log in processes.values():
-            if process.poll() is None:
-                try:
-                    process.terminate()
-                except ProcessLookupError:
-                    pass
-        for process, log in processes.values():
-            try:
-                process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            log.close()
-        raise
-    failures = []
-    for key, (process, log) in processes.items():
-        code = process.wait()
-        log.close()
-        if code:
-            failures.append(f"{key[0]}/{key[1]} exited with status {code}")
-    if failures:
-        raise RuntimeError("; ".join(failures))
-    return {
-        side: [
-            record
-            for taskset in sorted((configs / side).glob("*.toml"))
-            for record in read_taskset(output / side / taskset.stem, taskset.stem)
-        ]
-        for side in ("base", "head")
-    }
-
-
 def read_existing(output: Path, configs: Path) -> dict[str, list[dict]]:
     """Read pre-collected episode files (hosted evaluations pulled by `hosted_eval.py`)."""
     return {
@@ -312,7 +250,7 @@ def main() -> None:
             sides = read_existing(args.output, args.configs)
         else:
             run_oracle(args.eval, args.configs / "oracle.toml", args.output)
-            sides = run_all(args.eval, args.configs, args.output)
+            sides = read_existing(args.output, args.configs)
         for records in sides.values():
             validate_tasks(records, manifest)
         models = {record["model"] for records in sides.values() for record in records}
