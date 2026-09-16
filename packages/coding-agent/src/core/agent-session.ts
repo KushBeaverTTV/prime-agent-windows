@@ -7911,7 +7911,12 @@ export class AgentSession {
 		}
 		const queuedSteering = visibleSessionActionProjection(
 			this._actionStore.queuedActions("next_turn_boundary"),
-		).filter((action) => action.payload.kind === "turn");
+		).filter(
+			(action) =>
+				action.payload.kind === "turn" &&
+				!action.payload.acceptedAgentMessage &&
+				primaryDeliveryRecord(action).message.role === "user",
+		);
 		const canResume =
 			!this._disposed &&
 			!this._disposing &&
