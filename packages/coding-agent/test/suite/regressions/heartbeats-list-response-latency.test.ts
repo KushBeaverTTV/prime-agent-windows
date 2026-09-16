@@ -16,6 +16,7 @@ interface SupervisorHarness {
 	handleCommand(client: DaemonSocketClient, command: DaemonCommand): Promise<DaemonResponse | undefined>;
 	broadcastHeartbeatsChanged(): void;
 	passiveScheduledJobs?: { rows: unknown[]; scannedAt: number };
+	passiveScheduledJobsScan?: Promise<unknown[]>;
 }
 
 const harnesses: Harness[] = [];
@@ -75,6 +76,47 @@ function heartbeatIds(response: DaemonResponse | undefined): string[] {
 function heartbeatStatus(response: DaemonResponse | undefined, jobId: string): string {
 	const data = (response as { data?: { heartbeats?: Array<{ job: { id: string; status: string } }> } }).data;
 	return data?.heartbeats?.find((heartbeat) => heartbeat.job.id === jobId)?.job.status ?? "";
+}
+
+function cronJobIds(response: DaemonResponse | undefined): string[] {
+	const data = (response as { data?: { jobs?: Array<{ id: string }> } }).data;
+	return (data?.jobs ?? []).map((job) => job.id).sort();
+}
+
+/**
+ * Stalls the next scheduled-catalog scan inside its ledger read: the scan
+ * keeps its already-read ledger rows (pre-mutation state) and only its
+ * publication is held back, so releasing it models an older scan that
+ * finishes after a newer one.
+ */
+function stallNextFamilyScan(supervisor: SupervisorHarness) {
+	const ledger = supervisor.rlmSpawnLedger();
+	const realFamily = ledger.family.bind(ledger);
+	const stalled = createDeferred();
+	const stalledScanRead = createDeferred();
+	const spy = vi.spyOn(ledger, "family").mockImplementation(async (...args: Parameters<typeof realFamily>) => {
+		const infos = await realFamily(...args);
+		stalledScanRead.resolve();
+		if (spy.mock.calls.length === 1) await stalled.promise;
+		return infos;
+	});
+	return { spy, stalled, stalledScanRead };
+}
+
+/** Waits until the shared in-flight scan slot is empty again. */
+async function awaitSharedScanSlotCleared(supervisor: SupervisorHarness): Promise<void> {
+	await vi.waitFor(() => expect(supervisor.passiveScheduledJobsScan).toBeUndefined(), {
+		timeout: 2_000,
+		interval: 10,
+	});
+}
+
+/** Yields past the microtask queue so a released background scan settles. */
+async function flushBackgroundScans(): Promise<void> {
+	await Promise.race([
+		new Promise<void>((resolve) => globalThis.setImmediate(resolve)),
+		within(1_000, "the event loop to flush"),
+	]);
 }
 
 describe("heartbeats_list response latency", () => {
@@ -234,5 +276,149 @@ describe("heartbeats_list response latency", () => {
 		await vi.waitFor(() => expect(family).toHaveBeenCalledTimes(2));
 		await expect(listHeartbeats(supervisor, "list-2")).resolves.toMatchObject({ success: true });
 		expect(family).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps a newer snapshot when an older in-flight scan finishes last", async () => {
+		const supervisor = await createSupervisorHarness();
+		const directory = realpathSync(supervisor.defaultSessionConfig.agentDir);
+		const first = createSavedSession(directory, "first");
+		const firstJob = armPassiveHeartbeat(first, directory);
+
+		// Warm the snapshot, age it, and let the background refresh stall with
+		// pre-write ledger rows already read.
+		await expect(listHeartbeats(supervisor, "warm")).resolves.toMatchObject({ success: true });
+		const { spy, stalled, stalledScanRead } = stallNextFamilyScan(supervisor);
+		supervisor.passiveScheduledJobs!.scannedAt = Date.now() - 60_000;
+		await expect(listHeartbeats(supervisor, "stale-serve")).resolves.toMatchObject({ success: true });
+		await Promise.race([stalledScanRead.promise, within(1_000, "the stalled refresh scan to start")]);
+
+		// A second session's heartbeat lands while the refresh is stalled.
+		const second = createSavedSession(directory, "second");
+		const secondJob = armPassiveHeartbeat(second, directory);
+
+		// A cron_list drives a newer per-caller scan that completes first and
+		// publishes the post-write rows.
+		const cron = await supervisor.handleCommand({} as DaemonSocketClient, {
+			id: "cron-1",
+			type: "cron_list",
+			includeInactive: true,
+		});
+		expect(cronJobIds(cron)).toEqual([firstJob.id, secondJob.id].sort());
+		expect(heartbeatIds(await listHeartbeats(supervisor, "after-newer-scan")).sort()).toEqual(
+			[firstJob.id, secondJob.id].sort(),
+		);
+
+		// Releasing the older stalled refresh must not republish its pre-write
+		// rows over the newer snapshot.
+		stalled.resolve();
+		await awaitSharedScanSlotCleared(supervisor);
+		expect(heartbeatIds(await listHeartbeats(supervisor, "final")).sort()).toEqual(
+			[firstJob.id, secondJob.id].sort(),
+		);
+		expect(spy).toHaveBeenCalledTimes(2);
+	});
+
+	it("serves the stored snapshot to lists that arrive while the background refresh is in flight", async () => {
+		const supervisor = await createSupervisorHarness();
+		const directory = realpathSync(supervisor.defaultSessionConfig.agentDir);
+		const manager = createSavedSession(directory, "scheduled");
+		const job = armPassiveHeartbeat(manager, directory);
+
+		// Warm the snapshot, age it, and stall the background refresh it starts.
+		await expect(listHeartbeats(supervisor, "warm")).resolves.toMatchObject({ success: true });
+		const { spy, stalled, stalledScanRead } = stallNextFamilyScan(supervisor);
+		supervisor.passiveScheduledJobs!.scannedAt = Date.now() - 60_000;
+		await expect(listHeartbeats(supervisor, "stale-serve")).resolves.toMatchObject({ success: true });
+		await Promise.race([stalledScanRead.promise, within(1_000, "the background refresh to start")]);
+
+		// A list that arrives during the refresh answers from the still-present
+		// snapshot instead of queueing behind the stalled scan.
+		const duringRefresh = listHeartbeats(supervisor, "during-refresh");
+		try {
+			const response = await Promise.race([duringRefresh, within(1_000, "the snapshot-served heartbeats_list")]);
+			expect(response).toMatchObject({ success: true });
+			expect(heartbeatIds(response)).toEqual([job.id]);
+		} finally {
+			stalled.resolve();
+			await awaitSharedScanSlotCleared(supervisor);
+			// Drain a deadline-lost request so it cannot leak into later tests.
+			await duringRefresh.catch(() => undefined);
+		}
+		expect(spy).toHaveBeenCalledTimes(1);
+	});
+
+	it("reflects a completed heartbeat stop on the next list without serving the pre-mutation scan", async () => {
+		const supervisor = await createSupervisorHarness();
+		const directory = realpathSync(supervisor.defaultSessionConfig.agentDir);
+		const manager = createSavedSession(directory, "scheduled");
+		const job = armPassiveHeartbeat(manager, directory);
+
+		// Warm the snapshot, age it, and stall the pre-mutation refresh it starts.
+		await expect(listHeartbeats(supervisor, "warm")).resolves.toMatchObject({ success: true });
+		const { stalled, stalledScanRead } = stallNextFamilyScan(supervisor);
+		supervisor.passiveScheduledJobs!.scannedAt = Date.now() - 60_000;
+		await expect(listHeartbeats(supervisor, "stale-serve")).resolves.toMatchObject({ success: true });
+		await Promise.race([stalledScanRead.promise, within(1_000, "the pre-mutation refresh to start")]);
+
+		// Stop the heartbeat and broadcast the daemon-owned mutation.
+		const store = AgentCronJobStore.forSessionArtifacts();
+		store.registerSessionArtifact(manager.getSessionId(), manager.getSessionArtifactDir()!);
+		store.manageHeartbeat(manager.getSessionId(), job.id, "stop");
+		supervisor.broadcastHeartbeatsChanged();
+
+		// The next list must reflect the stop promptly: it cannot join the
+		// pre-mutation scan still in flight.
+		const stopped = listHeartbeats(supervisor, "after-stop");
+		try {
+			const response = await Promise.race([stopped, within(1_000, "the post-mutation heartbeats_list")]);
+			expect(response).toMatchObject({ success: true });
+			expect(heartbeatIds(response)).toEqual([]);
+		} finally {
+			stalled.resolve();
+			// Drain a deadline-lost request so it cannot leak into later tests.
+			await stopped.catch(() => undefined);
+		}
+
+		// The detached pre-mutation scan settling late must not republish rows.
+		await flushBackgroundScans();
+		await expect(listHeartbeats(supervisor, "final")).resolves.toMatchObject({ success: true });
+		expect(heartbeatIds(await listHeartbeats(supervisor, "final-check"))).toEqual([]);
+	});
+
+	it("does not return pre-change rows from the detached scan for lists starting after the broadcast", async () => {
+		const supervisor = await createSupervisorHarness();
+		const directory = realpathSync(supervisor.defaultSessionConfig.agentDir);
+		const manager = createSavedSession(directory, "scheduled");
+		const job = armPassiveHeartbeat(manager, directory);
+
+		// Warm the snapshot, age it, and stall the pre-change refresh it starts.
+		await expect(listHeartbeats(supervisor, "warm")).resolves.toMatchObject({ success: true });
+		const { stalled, stalledScanRead } = stallNextFamilyScan(supervisor);
+		supervisor.passiveScheduledJobs!.scannedAt = Date.now() - 60_000;
+		await expect(listHeartbeats(supervisor, "stale-serve")).resolves.toMatchObject({ success: true });
+		await Promise.race([stalledScanRead.promise, within(1_000, "the pre-change refresh to start")]);
+
+		// A second session's heartbeat lands with the daemon-owned broadcast.
+		const second = createSavedSession(directory, "second");
+		const secondJob = armPassiveHeartbeat(second, directory);
+		supervisor.broadcastHeartbeatsChanged();
+
+		// The list that starts after the broadcast must not await the detached
+		// pre-change scan; it rescans and serves both heartbeats.
+		const afterBroadcast = listHeartbeats(supervisor, "after-broadcast");
+		try {
+			const response = await Promise.race([afterBroadcast, within(1_000, "the post-broadcast heartbeats_list")]);
+			expect(response).toMatchObject({ success: true });
+			expect(heartbeatIds(response).sort()).toEqual([job.id, secondJob.id].sort());
+		} finally {
+			stalled.resolve();
+			// Drain a deadline-lost request so it cannot leak into later tests.
+			await afterBroadcast.catch(() => undefined);
+		}
+
+		// The detached pre-change scan settling late must not republish rows.
+		await flushBackgroundScans();
+		const final = await listHeartbeats(supervisor, "final");
+		expect(heartbeatIds(final).sort()).toEqual([job.id, secondJob.id].sort());
 	});
 });

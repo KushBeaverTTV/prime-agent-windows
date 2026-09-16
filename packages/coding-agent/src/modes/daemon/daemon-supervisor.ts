@@ -787,8 +787,12 @@ export class DaemonSupervisor {
 	private passiveScheduledJobs?: { rows: PassiveScheduledJob[]; scannedAt: number };
 	/** One in-flight scan shared by every concurrent catalog read. */
 	private passiveScheduledJobsScan?: Promise<PassiveScheduledJob[]>;
-	/** Bumped on invalidation so a scan that started before a mutation cannot republish stale rows. */
-	private passiveScheduledJobsGeneration = 0;
+	/**
+	 * Monotonic epoch claimed at each scan start and at each invalidation: only
+	 * the newest claim may publish, so an older scan cannot overwrite a newer
+	 * scan's rows and a scan that raced a mutation cannot republish stale rows.
+	 */
+	private passiveScheduledJobsEpoch = 0;
 
 	constructor(
 		private readonly socketPath: string,
@@ -972,12 +976,13 @@ export class DaemonSupervisor {
 	 * scheduled-jobs artifact. Always scans fresh per caller: management
 	 * decisions, wake recomputes, and the ephemeral-cancel retries they drive
 	 * must see the latest disk state. Every completed scan opportunistically
-	 * refreshes the snapshot that heartbeats_list serves.
+	 * refreshes the snapshot that heartbeats_list serves, but only while it is
+	 * still the newest scan: an older scan loses the publish race.
 	 */
 	private async collectPassiveScheduledJobs(includeInactive = false): Promise<PassiveScheduledJob[]> {
-		const generation = this.passiveScheduledJobsGeneration;
+		const epoch = this.claimPassiveScheduledJobsEpoch();
 		const rows = await this.scanPassiveScheduledJobs();
-		this.storePassiveScheduledJobs(generation, rows);
+		this.storePassiveScheduledJobs(epoch, rows);
 		return includeInactive ? rows : activeScheduledJobs(rows);
 	}
 
@@ -986,20 +991,23 @@ export class DaemonSupervisor {
 	 * freshness matters less than not queueing: with hundreds of saved sessions,
 	 * N concurrent catalog requests used to enqueue N full scans and push the
 	 * last response past the client's 30s transport timeout. Daemon-owned
-	 * mutations drop the snapshot (broadcastHeartbeatsChanged and the
-	 * saved-session delete/rename paths); the next list or the wake recompute
-	 * armed by the same broadcast refreshes it, and concurrent cold lists share
-	 * one in-flight scan. A served snapshot older than
-	 * PASSIVE_SCHEDULED_JOBS_REFRESH_MS refreshes in the background so external
-	 * artifact writes converge without blocking a response.
+	 * mutations drop the snapshot and detach the in-flight shared scan
+	 * (broadcastHeartbeatsChanged and the saved-session delete/rename paths);
+	 * the next list or the wake recompute armed by the same broadcast rescans,
+	 * and concurrent cold lists share one in-flight scan. A served snapshot
+	 * older than PASSIVE_SCHEDULED_JOBS_REFRESH_MS refreshes in the background
+	 * without being dropped, so lists that arrive during the refresh keep
+	 * serving bounded-stale rows and external artifact writes converge without
+	 * blocking a response.
 	 */
 	private async catalogPassiveScheduledJobs(): Promise<PassiveScheduledJob[]> {
 		const cached = this.passiveScheduledJobs;
 		if (cached) {
 			if (Date.now() - cached.scannedAt >= PASSIVE_SCHEDULED_JOBS_REFRESH_MS && !this.shuttingDown) {
-				// Stale-while-revalidate: serve the snapshot now and refresh without
-				// blocking; a failure only logs, the next read retries.
-				this.invalidatePassiveScheduledJobs();
+				// Stale-while-revalidate: serve the snapshot now and refresh in the
+				// background without dropping it, so requests that arrive during the
+				// refresh keep answering from bounded-stale rows instead of queueing
+				// behind the scan. A failure only logs; the next read retries.
 				void this.sharedPassiveScheduledJobsScan().catch((error: unknown) =>
 					this.log(`Passive scheduled-jobs refresh failed: ${String(error)}`),
 				);
@@ -1010,28 +1018,58 @@ export class DaemonSupervisor {
 	}
 
 	private sharedPassiveScheduledJobsScan(): Promise<PassiveScheduledJob[]> {
-		const generation = this.passiveScheduledJobsGeneration;
-		this.passiveScheduledJobsScan ??= this.scanPassiveScheduledJobs()
-			.then((rows) => {
-				this.storePassiveScheduledJobs(generation, rows);
-				return rows;
-			})
-			.finally(() => {
-				this.passiveScheduledJobsScan = undefined;
-			});
+		this.passiveScheduledJobsScan ??= this.startSharedPassiveScheduledJobsScan();
 		return this.passiveScheduledJobsScan;
 	}
 
-	/** A scan that raced an invalidation must not republish its pre-mutation rows as fresh. */
-	private storePassiveScheduledJobs(generation: number, rows: PassiveScheduledJob[]): void {
-		if (generation === this.passiveScheduledJobsGeneration) {
+	/**
+	 * Claims the publish epoch when the scan actually starts, so callers that
+	 * join an existing in-flight scan keep its rows, while a caller that starts
+	 * after an invalidation never adopts the detached pre-mutation scan.
+	 */
+	private startSharedPassiveScheduledJobsScan(): Promise<PassiveScheduledJob[]> {
+		const epoch = this.claimPassiveScheduledJobsEpoch();
+		const scan = this.scanPassiveScheduledJobs()
+			.then((rows) => {
+				this.storePassiveScheduledJobs(epoch, rows);
+				return rows;
+			})
+			.finally(() => {
+				// An invalidation may have detached this promise and let a newer
+				// scan take the slot; clear it only while it is still ours.
+				if (this.passiveScheduledJobsScan === scan) {
+					this.passiveScheduledJobsScan = undefined;
+				}
+			});
+		return scan;
+	}
+
+	/**
+	 * Compare-and-swap publish: a scan may store only while it still owns the
+	 * newest epoch, so an older scan cannot overwrite a newer snapshot and a
+	 * scan that raced an invalidation cannot republish pre-mutation rows.
+	 */
+	private storePassiveScheduledJobs(epoch: number, rows: PassiveScheduledJob[]): void {
+		if (epoch === this.passiveScheduledJobsEpoch) {
 			this.passiveScheduledJobs = { rows, scannedAt: Date.now() };
 		}
 	}
 
+	private claimPassiveScheduledJobsEpoch(): number {
+		this.passiveScheduledJobsEpoch += 1;
+		return this.passiveScheduledJobsEpoch;
+	}
+
+	/**
+	 * Daemon-owned mutations invalidate: claim the epoch so in-flight scans can
+	 * no longer publish, drop the cached snapshot, and detach the shared
+	 * in-flight promise so a list that starts after the mutation rescans
+	 * instead of awaiting pre-mutation rows.
+	 */
 	private invalidatePassiveScheduledJobs(): void {
-		this.passiveScheduledJobsGeneration += 1;
+		this.claimPassiveScheduledJobsEpoch();
 		this.passiveScheduledJobs = undefined;
+		this.passiveScheduledJobsScan = undefined;
 	}
 
 	/** The uncached disk scan; all statuses load so one row set serves every caller's filter. */
