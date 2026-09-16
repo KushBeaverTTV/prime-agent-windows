@@ -65,8 +65,9 @@ def test_manifest_is_the_fixed_pinned_suite() -> None:
     assert manifest["model"] == "internal/glm-5.3-fast"
     assert manifest["autonomous"] is False
     root_concurrency = manifest["max_concurrent"] * 6
-    assert manifest["max_concurrent"] == 5
+    assert manifest["max_concurrent"] == 4
     assert root_concurrency <= 32
+    assert manifest["backup_model"] == "internal/deepseek-v4.1-flash"
     tasksets = {item["id"]: item["tasks"] for item in manifest["tasksets"]}
     verified_repositories = {task.rsplit("-", 1)[0] for task in tasksets["swebench-verified"]}
     pro_repositories = {task.removeprefix("instance_").split("-", 1)[0] for task in tasksets["swebench-pro"]}
@@ -279,7 +280,12 @@ def fake_trace(*, ok: bool = True, timeout: bool = False):
         message="agent timeout: rollout exceeded its 3600s budget",
         status_code=None,
     )
-    call = SimpleNamespace(error=error if timeout else None, node=0, usage=usage)
+    call = SimpleNamespace(
+        error=error if timeout else None,
+        node=0,
+        usage=usage,
+        model="internal/glm-5.3-fast",
+    )
     reward = SimpleNamespace(score=1.0, weight=1.0, value=1.0)
     return SimpleNamespace(
         task=SimpleNamespace(data=SimpleNamespace(name="suite/task-1")),

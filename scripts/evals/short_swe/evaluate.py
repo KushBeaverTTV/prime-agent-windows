@@ -136,9 +136,13 @@ def trace_record(episode, taskset: str) -> dict:
     ]
     if any(isinstance(value, bool) or not math.isfinite(value) for value in rewards):
         raise ValueError(f"{identity} has invalid reward values")
+    models = {call.model for call in trace.calls if call.model is not None}
+    if len(models) != 1:
+        raise ValueError(f"{identity} did not use exactly one model")
     return {
         "taskset": taskset,
         "task": task_name(trace),
+        "model": models.pop(),
         "resolved": trace.ok and scored(trace) and trace.reward > 0,
         "model_failure": not trace.ok,
         "uncached_input_tokens": usage.prompt_tokens,
@@ -166,6 +170,9 @@ def validate_tasks(records: list[dict], manifest: dict) -> None:
     actual = {(record["taskset"], record["task"]) for record in records}
     if actual != expected or len(records) != len(expected):
         raise ValueError("trace task identities differ from the fixed 15/8/5 manifest")
+    models = {record["model"] for record in records}
+    if len(models) != 1 or models.isdisjoint({manifest["model"], manifest["backup_model"]}):
+        raise ValueError("paired tasks must all use one pinned model")
 
 
 def validate_oracle_episode(episode) -> None:
@@ -271,6 +278,18 @@ def run_all(executable: Path, configs: Path, output: Path) -> dict[str, list[dic
     }
 
 
+def read_existing(output: Path, configs: Path) -> dict[str, list[dict]]:
+    """Read pre-collected episode files (hosted evaluations pulled by `hosted_eval.py`)."""
+    return {
+        side: [
+            record
+            for taskset in sorted((configs / side).glob("*.toml"))
+            for record in read_taskset(output / side / taskset.stem, taskset.stem)
+        ]
+        for side in ("base", "head")
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval", required=True, type=Path)
@@ -278,19 +297,31 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--request", required=True, type=Path)
     parser.add_argument("--result", required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--oracle-only", action="store_true")
+    mode.add_argument("--from-existing", action="store_true")
     args = parser.parse_args()
     manifest = json.loads((ROOT / "short-swe.json").read_text())
     request = json.loads(args.request.read_text())
     try:
-        run_oracle(args.eval, args.configs / "oracle.toml", args.output)
+        if args.oracle_only:
+            run_oracle(args.eval, args.configs / "oracle.toml", args.output)
+            return
         started = time.time()
-        sides = run_all(args.eval, args.configs, args.output)
+        if args.from_existing:
+            sides = read_existing(args.output, args.configs)
+        else:
+            run_oracle(args.eval, args.configs / "oracle.toml", args.output)
+            sides = run_all(args.eval, args.configs, args.output)
         for records in sides.values():
             validate_tasks(records, manifest)
+        models = {record["model"] for records in sides.values() for record in records}
+        if len(models) != 1:
+            raise ValueError("base and head did not use the same model")
         result = {
             "schema_version": 1,
             "request": request,
-            "model": manifest["model"],
+            "model": models.pop(),
             "started_at": started,
             "finished_at": time.time(),
             "sides": sides,

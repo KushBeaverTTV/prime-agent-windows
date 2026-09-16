@@ -2,7 +2,7 @@
   "schema_version": 1,
   "model": "internal/glm-5.3-fast",
   "autonomous": false,
-  "max_concurrent": 5,
+  "max_concurrent": 4,
   "num_rollouts": 1,
   "verifiers_commit": "9df6a3c01bb640c34380f4f6dff63a1b168dee22",
   "environments_commit": "a41660014674ba43d56ed054199dde25ddf69946",
@@ -67,5 +67,6 @@
     "max_total_tokens": 5000000,
     "rollout_timeout_seconds": 3600,
     "max_model_request_bytes": 16000000
-  }
+  },
+  "backup_model": "internal/deepseek-v4.1-flash"
 }

@@ -114,6 +114,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
+      actions: read
       contents: read
       pull-requests: write
       statuses: write
@@ -222,18 +223,123 @@ jobs:
             --head-artifacts artifacts/head --head-sha "${{ steps.resolve.outputs.head_sha }}" \
             --output generated-configs
 
-      - name: Evaluate exact base and head concurrently
-        id: evaluate
+      - name: Run the deterministic gold-patch oracle
+        id: oracle
         continue-on-error: true
         if: steps.prepare.outcome == 'success'
         run: |
           vendor/verifiers/.venv/bin/python scripts/evals/short_swe/evaluate.py \
             --eval vendor/verifiers/.venv/bin/eval --configs generated-configs \
-            --output raw-eval --request request/request.json --result results/paired.json
+            --output oracle-eval --request request/request.json --result results/oracle.json \
+            --oracle-only
         env:
           PRIME_API_KEY: ${{ secrets.PRIME_BEHAVIORAL_API_KEY }}
           PRIME_SANDBOX_API_KEY: ${{ secrets.PRIME_SANDBOX_API_KEY }}
           PRIME_TEAM_ID: ${{ vars.PRIME_BENCHMARK_TEAM_ID }}
+
+      - name: Publish the base candidate tarballs
+        id: upload-base
+        continue-on-error: true
+        if: steps.oracle.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-tarballs-base
+          path: artifacts/base/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish the head candidate tarballs
+        id: upload-head
+        continue-on-error: true
+        if: steps.upload-base.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-tarballs-head
+          path: artifacts/head/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build the hosted candidate sources
+        id: sources
+        continue-on-error: true
+        if: steps.upload-head.outcome == 'success'
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def side(name: str, sha: str, artifact_id: str) -> dict:
+              manifest = json.loads(Path(f"artifacts/{name}/artifact-manifest.json").read_text())
+              if manifest["sha"] != sha:
+                  raise ValueError(f"{name}: artifact manifest does not match the request")
+              return {
+                  "tarballs_url": (
+                      f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}"
+                      f"/actions/artifacts/{artifact_id}/zip"
+                  ),
+                  "commit": sha,
+                  "checksums": {row["name"]: row["sha256"] for row in manifest["artifacts"]},
+                  "token": os.environ["GH_TOKEN"],
+              }
+
+          request = json.loads(Path("request/request.json").read_text())
+          sources = {
+              "base": side("base", request["base_sha"], "${{ steps.upload-base.outputs.artifact-id }}"),
+              "head": side("head", request["head_sha"], "${{ steps.upload-head.outputs.artifact-id }}"),
+          }
+          Path("request/sources.json").write_text(json.dumps(sources))
+          PY
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install the Prime CLI
+        id: prime-cli
+        continue-on-error: true
+        if: steps.sources.outcome == 'success'
+        run: uv tool install prime==0.6.31
+
+      - name: Launch the six hosted evaluations
+        id: hosted
+        continue-on-error: true
+        if: steps.prime-cli.outcome == 'success'
+        run: |
+          uv run --locked --project scripts/benchmarks python \
+            scripts/evals/short_swe/hosted_eval.py launch \
+            --request request/request.json --sources request/sources.json --output hosted
+        env:
+          PRIME_API_KEY: ${{ secrets.PRIME_BEHAVIORAL_API_KEY }}
+          PRIME_TEAM_ID: ${{ vars.PRIME_BENCHMARK_TEAM_ID }}
+
+      - name: Wait for the hosted evaluations
+        id: hosted-wait
+        continue-on-error: true
+        if: steps.hosted.outcome == 'success'
+        run: |
+          uv run --locked --project scripts/benchmarks python \
+            scripts/evals/short_swe/hosted_eval.py wait --output hosted
+        env:
+          PRIME_API_KEY: ${{ secrets.PRIME_BEHAVIORAL_API_KEY }}
+
+      - name: Collect the hosted episodes
+        id: hosted-collect
+        continue-on-error: true
+        if: steps.hosted-wait.outcome == 'success'
+        run: |
+          uv run --locked --project scripts/benchmarks python \
+            scripts/evals/short_swe/hosted_eval.py collect --output hosted
+        env:
+          PRIME_API_KEY: ${{ secrets.PRIME_BEHAVIORAL_API_KEY }}
+
+      - name: Gate the paired hosted result
+        id: evaluate
+        continue-on-error: true
+        if: steps.hosted-collect.outcome == 'success'
+        run: |
+          vendor/verifiers/.venv/bin/python scripts/evals/short_swe/evaluate.py \
+            --eval vendor/verifiers/.venv/bin/eval --configs generated-configs \
+            --output hosted/raw-eval --request request/request.json \
+            --result results/paired.json --from-existing
 
       - name: Clean up evaluation sandboxes
         if: always() && steps.evaluator.outcome == 'success'
@@ -251,7 +357,8 @@ jobs:
         run: |
           python3 scripts/evals/short_swe/report.py \
             --request request/request.json --result results/paired.json \
-            --markdown results/report.md --verdict results/verdict
+            --markdown results/report.md --verdict results/verdict \
+            --evaluations hosted/hosted-runs.json
           cat results/report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save packages, traces, and paired results
@@ -262,7 +369,8 @@ jobs:
           path: |
             artifacts
             generated-configs
-            raw-eval
+            oracle-eval
+            hosted
             request
             results
           if-no-files-found: warn

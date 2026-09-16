@@ -29,10 +29,27 @@ Reapply the label to approve the new exact comparison.
   It never extracts or executes candidate packages.
 - Verifiers uploads those packages into isolated task sandboxes. Candidate code
   receives no GitHub, provider, or sandbox credentials.
-- The three tasksets and both comparison sides launch concurrently. Each evaluator starts at most
-  five root episodes, so the six-way launch has at most 30 root agents against provider capacity 32.
-  Recursive subagents remain unrestricted; there is no shared client-side queue or semaphore.
-  A terminal rollout timeout with any provider call error fails closed.
+- The three tasksets and both comparison sides run as six private hosted evaluations on
+  Prime Evals, launched concurrently. Each evaluation runs the published `short-swe-*`
+  Environments Hub packages, which embed the fixed slices, pinned datasets, evaluation
+  limits, and the candidate harness as package defaults. Each evaluation starts at most
+  four root episodes, so the six-way launch has at most 24 root agents against the global
+  provider concurrency limit of 32 shared across every session. Recursive subagents remain
+  unrestricted; there is no shared client-side queue or semaphore. A terminal rollout
+  timeout with any provider call error fails closed.
+- The suite pins `internal/glm-5.3-fast` with `internal/deepseek-v4.1-flash` as its
+  authorized backup for a saturated global limit. Every paired task must use exactly one
+  pinned model, and base and head must use the same model; the gates fail otherwise.
+- The candidate npm tarballs are delivered to each hosted evaluation through
+  `CANDIDATE_TARBALLS_URL`, `CANDIDATE_COMMIT`, and `CANDIDATE_CHECKSUMS` secrets. The
+  trusted harness downloads and checksum-verifies them before the agent starts, and those
+  values never reach a candidate-controlled runtime. The platform's verifiers runtime is
+  version-managed by Prime Evals; the packages accept `verifiers[harbor]>=0.3.1` and the
+  gates validate every pulled episode with the pinned local evaluator.
+- Hosted episodes are pulled back with `prime eval samples`; each sample carries the full
+  native episode record, which the pinned evaluator validates with the same fail-closed
+  gates as the local paired flow. The report links every hosted evaluation for durable
+  evidence.
 - Typed Verifiers `WireTrace` episodes provide rewards, usage, timing, and task
   identity. Missing or malformed episodes fail. Exact rollout deadlines and deterministic
   provider rejections remain unresolved model outcomes; transient provider failures fail.

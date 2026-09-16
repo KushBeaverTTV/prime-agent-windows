@@ -131,7 +131,7 @@ def validate_result(result: dict, request: dict) -> tuple[dict, dict]:
     return base, head
 
 
-def render(result: dict, request: dict) -> tuple[str, str]:
+def render(result: dict, request: dict, evaluations: dict | None = None) -> tuple[str, str]:
     base, head = validate_result(result, request)
     findings = compare(base, head)
     verdict = "fail" if findings else "pass"
@@ -182,7 +182,15 @@ def render(result: dict, request: dict) -> tuple[str, str]:
             )
     lines.extend(["", "**Threshold findings:**" if findings else "No drastic threshold crossed.", ""])
     lines.extend(f"- {finding}" for finding in findings)
-    lines.extend([f"[Run, logs, traces, and paired result]({run_url})", ""])
+    lines.append(f"[Workflow run]({run_url})")
+    if evaluations:
+        lines.extend(["", "**Hosted evaluations (Prime Evals):**", ""])
+        for key in sorted(evaluations):
+            record = evaluations[key]
+            evaluation_id = record.get("evaluation_id", "")
+            viewer = f"https://app.primeintellect.ai/dashboard/evaluations/{evaluation_id}"
+            lines.append(f"- {key}: [{record.get('name', evaluation_id)}]({viewer})")
+        lines.append("")
     return "\n".join(lines), verdict
 
 
@@ -209,10 +217,14 @@ def main() -> None:
     parser.add_argument("--result", required=True, type=Path)
     parser.add_argument("--markdown", required=True, type=Path)
     parser.add_argument("--verdict", required=True, type=Path)
+    parser.add_argument("--evaluations", type=Path, default=None)
     args = parser.parse_args()
     request = json.loads(args.request.read_text())
+    evaluations = None
+    if args.evaluations and args.evaluations.exists():
+        evaluations = json.loads(args.evaluations.read_text())
     try:
-        markdown, verdict = render(json.loads(args.result.read_text()), request)
+        markdown, verdict = render(json.loads(args.result.read_text()), request, evaluations)
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         markdown, verdict = render_failure(request), "fail"
     args.markdown.parent.mkdir(parents=True, exist_ok=True)

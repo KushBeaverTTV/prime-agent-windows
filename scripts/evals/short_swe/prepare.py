@@ -171,6 +171,8 @@ def validate_manifest(manifest: dict) -> None:
         or manifest.get("limits") != expected_limits
     ):
         raise ValueError("unsupported Short SWE manifest")
+    if not all(isinstance(manifest.get(key), str) and manifest[key] for key in ("model", "backup_model")):
+        raise ValueError("Short SWE must pin the model and its backup")
     if not SHA_RE.fullmatch(manifest.get("verifiers_commit", "")):
         raise ValueError("invalid Verifiers revision")
     if not SHA_RE.fullmatch(manifest.get("environments_commit", "")):

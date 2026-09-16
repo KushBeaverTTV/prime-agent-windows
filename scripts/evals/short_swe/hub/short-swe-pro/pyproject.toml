@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "short-swe-pro"
+version = "0.1.3"
+description = "the fixed 8-task SWE-bench Pro slice"
+requires-python = ">=3.12"
+dependencies = [
+    "verifiers[harbor]>=0.3.1",
+]
+tags =  ["multi-turn", "sandbox", "harbor", "v1", "swe"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["short_swe_pro"]
