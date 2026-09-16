@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,7 +52,7 @@ describe("ReplKernelManager startup", () => {
 				"",
 			].join("\n"),
 		);
-		const stderrLogPath = join(tempDir, "kernel-stderr.log");
+		const stderrLogPath = join(tempDir, "artifacts", "kernel-stderr.log");
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const manager = new ReplKernelManager({ python, cwd: tempDir, stderrLogPath });
 
@@ -60,6 +60,8 @@ describe("ReplKernelManager startup", () => {
 			// Well under the 30s ready timeout: teardown must not wait for the
 			// grandchild (destroying the pipe kills it with SIGPIPE).
 			await expect(manager.execute("print(1)")).rejects.toThrow(/Kernel exited before ready/);
+			expect(statSync(stderrLogPath).mode & 0o777).toBe(0o600);
+			expect(statSync(join(tempDir, "artifacts")).mode & 0o777).toBe(0o700);
 		} finally {
 			errorSpy.mockRestore();
 			await manager.shutdown({ snapshot: true, drainHostRequests: true });
