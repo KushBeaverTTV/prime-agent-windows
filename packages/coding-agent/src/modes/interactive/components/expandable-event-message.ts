@@ -34,6 +34,10 @@ export abstract class ExpandableEventMessage extends Container {
 		this.updateDisplay();
 	}
 
+	toggleExpanded(): void {
+		this.setExpanded(!this.expanded);
+	}
+
 	override invalidate(): void {
 		super.invalidate();
 		this.updateDisplay();
