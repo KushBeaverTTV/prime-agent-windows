@@ -39,6 +39,9 @@ def recognized_model_failure(trace) -> bool:
             for error in call_errors
         )
     if terminal.type == "ProviderError" and terminal.status_code in {500, 502, 503, 504}:
+        provider_call_errors = [error for error in call_errors if error.type == "ProviderError"]
+        if any(error.status_code not in {500, 502, 503, 504} for error in provider_call_errors):
+            return False
         return True
     return (
         not call_errors
