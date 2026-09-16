@@ -1135,3 +1135,47 @@ class HarnessSearchTest(unittest.TestCase):
             with self.assertRaises(TypeError):
                 state.search("worktree", limit=0)
 
+    def test_search_discounts_common_terms_below_rare_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            for index in range(5):
+                state.create_memory(
+                    f"Session notes {index}",
+                    f"Session state notes about session handling {index}.",
+                    id=f"common{index}",
+                )
+            state.create_memory("Quantum note", "Only quantum annealing matters once.", id="rare")
+
+            results = state.search("session quantum")
+
+            # "session" matches 5 of 6 entries (log(1 + 6/5)) while "quantum"
+            # matches 1 of 6 (log(1 + 6/1)), so the rare term wins even though
+            # the dense entries are newer.
+            self.assertTrue(results)
+            self.assertEqual(results[0].id, "rare")
+            # Common terms are discounted, not erased: every matching entry still ranks.
+            self.assertEqual({entry.id for entry in results}, {"rare"} | {f"common{i}" for i in range(5)})
+
+    def test_search_keeps_stable_order_for_equal_frequency_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+            state.create_memory("Session notes", "Same session signal.", id="older")
+            state.create_memory("Session notes", "Same session signal.", id="newer")
+            state.entries["memory"]["older"].updated_at = "2026-08-01T00:00:00+00:00"
+            state.entries["memory"]["newer"].updated_at = "2026-09-01T00:00:00+00:00"
+
+            # Identical field coverage discounts both entries the same way, so
+            # the recency tie-break is unchanged.
+            self.assertEqual([entry.id for entry in state.search("session")], ["newer", "older"])
+
+    def test_search_handles_empty_and_single_entry_corpora(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = HarnessState(Path(temp_dir) / "harness_state.json")
+
+            self.assertEqual(state.search("session"), [])
+
+            state.create_memory("Session notes", "Session signal.", id="solo")
+            # N=1 with df=1 discounts to log(2): a lone match still scores
+            # above zero and is returned.
+            self.assertEqual([entry.id for entry in state.search("session")], ["solo"])
+

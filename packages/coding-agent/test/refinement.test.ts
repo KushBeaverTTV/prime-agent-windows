@@ -16,6 +16,7 @@ import {
 	getRefinementHistoryPath,
 	type HarnessEntry,
 	type HarnessState,
+	harnessQueryTermIdf,
 	harnessQueryTerms,
 	inferRefinementResultScope,
 	loadGlobalRefinementHistory,
@@ -898,6 +899,119 @@ describe("harness digest relevance ranking", () => {
 		// "worktree" matches content only (1 field) -> 1 * 1 = 1. Total 3.
 		expect(scoreHarnessEntryForQuery(entry, terms)).toBe(3);
 		expect(scoreHarnessEntryForQuery(entry, new Map())).toBe(0);
+	});
+
+	it("computes document-frequency discounts over the ranked corpus", () => {
+		const common0 = makeEntry("common0", "Session notes", "session text", "2026-08-01T00:00:00.000Z");
+		const common1 = makeEntry("common1", "Session notes", "session text", "2026-08-01T00:00:00.000Z");
+		const rare = makeEntry("rare", "Quantum note", "quantum text", "2026-08-01T00:00:00.000Z");
+		const terms = new Map([
+			["session", 1],
+			["quantum", 1],
+			["missing", 1],
+		]);
+		const idf = harnessQueryTermIdf([common0, common1, rare], terms);
+		// "session" matches 2 of 3 entries, "quantum" 1 of 3, "missing" none.
+		expect(idf.get("session")).toBeCloseTo(Math.log(1 + 3 / 2), 12);
+		expect(idf.get("quantum")).toBeCloseTo(Math.log(1 + 3 / 1), 12);
+		expect(idf.has("missing")).toBe(false);
+		// Degenerate corpora stay inert: no entries means no discounts.
+		expect(harnessQueryTermIdf([], terms).size).toBe(0);
+		expect(harnessQueryTermIdf([common0], new Map()).size).toBe(0);
+	});
+
+	it("discounts the overlap score by per-term document frequency", () => {
+		// Same entry and terms as the undistorted test above, now discounted:
+		// both matched terms appear in 1 of 1 entries, so each weighs log(2)
+		// and the total is 3 * log(2).
+		const entry = makeEntry(
+			"repo",
+			"Repository facts",
+			"The checkout lives at ~/repo with worktrees.",
+			"2026-09-01T00:00:00.000Z",
+		);
+		const terms = new Map([
+			["repository", 2],
+			["worktree", 1],
+			["absent-term", 5],
+		]);
+		const idf = harnessQueryTermIdf([entry], terms);
+		expect(idf.get("repository")).toBeCloseTo(Math.log(2), 12);
+		expect(idf.get("worktree")).toBeCloseTo(Math.log(2), 12);
+		expect(scoreHarnessEntryForQuery(entry, terms, idf)).toBeCloseTo(3 * Math.log(2), 12);
+	});
+
+	it("ranks a rare distinctive term above a common-term-dense entry", () => {
+		const state = loadHarnessState(join(makeTempDir(), "h-idf"), "local");
+		// Five entries dense in a ubiquitous term, one holding a rare term.
+		for (let index = 0; index < 5; index += 1) {
+			state.entries.memory[`common${index}`] = makeEntry(
+				`common${index}`,
+				"Session notes",
+				`Session state notes about session handling ${index}.`,
+				`2026-08-0${index + 1}T00:00:00.000Z`,
+			);
+		}
+		// The rare entry is the oldest, so it wins on distinctiveness alone.
+		state.entries.memory.rare = makeEntry(
+			"rare",
+			"Quantum note",
+			"Only quantum annealing matters once.",
+			"2026-07-01T00:00:00.000Z",
+		);
+
+		const ranked = formatHarnessStateForPrompt(state, {
+			maxEntriesPerKind: 1,
+			queryTerms: new Map([
+				["session", 1],
+				["quantum", 1],
+			]),
+		});
+		// Without the discount the dense "session" entries would win on the
+		// recency tie-break; with it the rare term's log(1 + 6/1) beats
+		// five-way "session" matches at log(1 + 6/5).
+		expect(ranked).toContain("[global:rare]");
+		expect(ranked).not.toContain("[global:common4]");
+	});
+
+	it("keeps stable order for entries matching the same ubiquitous term", () => {
+		const state = loadHarnessState(join(makeTempDir(), "h-idf-stable"), "local");
+		state.entries.memory.older = makeEntry(
+			"older",
+			"Session notes",
+			"Same session signal.",
+			"2026-08-01T00:00:00.000Z",
+		);
+		state.entries.memory.newer = makeEntry(
+			"newer",
+			"Session notes",
+			"Same session signal.",
+			"2026-09-01T00:00:00.000Z",
+		);
+
+		const ranked = formatHarnessStateForPrompt(state, {
+			maxEntriesPerKind: 2,
+			queryTerms: new Map([["session", 1]]),
+		});
+		// Equal field coverage discounts both entries identically; recency
+		// still breaks the tie.
+		expect(ranked.indexOf("[global:newer]")).toBeGreaterThanOrEqual(0);
+		expect(ranked.indexOf("[global:newer]")).toBeLessThan(ranked.indexOf("[global:older]"));
+	});
+
+	it("ranks empty and single-entry corpora without idf noise", () => {
+		const empty = loadHarnessState(join(makeTempDir(), "h-idf-empty"), "local");
+		expect(formatHarnessStateForPrompt(empty, { queryTerms: new Map([["session", 1]]) })).toContain("memory: 0");
+
+		const single = loadHarnessState(join(makeTempDir(), "h-idf-single"), "local");
+		single.entries.memory.solo = makeEntry("solo", "Session notes", "Session signal.", "2026-08-01T00:00:00.000Z");
+		// N=1 with df=1 discounts to log(2): a lone matching entry still
+		// scores above zero and is selected.
+		const ranked = formatHarnessStateForPrompt(single, {
+			maxEntriesPerKind: 1,
+			queryTerms: new Map([["session", 1]]),
+		});
+		expect(ranked).toContain("[global:solo]");
 	});
 
 	it.each<{ label: string; query: string; winner: string; loser: string; entries: Record<string, HarnessEntry> }>([
