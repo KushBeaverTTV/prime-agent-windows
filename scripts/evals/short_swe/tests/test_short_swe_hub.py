@@ -66,6 +66,17 @@ def test_scaleswe_filters_by_ids_without_eval() -> None:
     assert 'row["instance_id"] in fixed_ids' in taskset
 
 
+def test_scaleswe_score_travels_a_controller_channel() -> None:
+    taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
+    scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
+    # The scorer writes its result to a unique controller-generated file, and the
+    # reward reads that file; stdout parsing — spoofable by atexit handlers — is gone.
+    assert "SCALESWE_SCORE_PATH" in scorer
+    assert "SCALESWE_SCORE_PATH" in taskset
+    assert "SCORE_RE" not in taskset
+    assert "await runtime.read(score_path)" in taskset
+
+
 def test_scaleswe_paths_include_symlinks_and_absolute_tools() -> None:
     taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
     assert "/usr/bin/find" in taskset

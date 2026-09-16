@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "short-swe-scaleswe"
-version = "0.1.10"
+version = "0.1.11"
 description = "the fixed 5-task Scale-SWE slice"
 requires-python = ">=3.12"
 dependencies = [

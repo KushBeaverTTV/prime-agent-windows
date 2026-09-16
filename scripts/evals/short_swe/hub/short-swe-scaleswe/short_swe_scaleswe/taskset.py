@@ -12,7 +12,6 @@ which scores 1.0 iff every expected id passed.
 import hashlib
 import json
 import logging
-import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
@@ -27,8 +26,6 @@ logger = logging.getLogger(__name__)
 ScaleSWEDataset = Literal["PrimeIntellect/Scale-SWE-Verified", "AweAI-Team/Scale-SWE"]
 
 DATASET: ScaleSWEDataset = "PrimeIntellect/Scale-SWE-Verified"
-
-SCORE_RE = re.compile(r"<score>([0-9.]+)</score>")
 
 # The testbed conda env (with the project + pytest installed) and quiet, non-interactive
 # tooling — exported for every command the taskset runs in the sandbox.
@@ -233,14 +230,19 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
         scorer = f"/tmp/scaleswe_scorer_{token}.py"
         test_ids_path = f"/tmp/scaleswe_test_ids_{token}.json"
         results = f"/tmp/scaleswe_results_{token}.xml"
+        score_path = f"/tmp/scaleswe_score_{token}.txt"
         await runtime.write(scorer, SCORER_SRC)
         await runtime.write(test_ids_path, json.dumps(test_ids).encode())
-        result = await runtime.run(
+        await runtime.run(
             ["python", "-I", scorer, test_ids_path],
-            {**ENV, "SCALESWE_RESULTS_XML": results},
+            {**ENV, "SCALESWE_RESULTS_XML": results, "SCALESWE_SCORE_PATH": score_path},
         )
-        matches = SCORE_RE.findall(result.stdout)
-        return float(matches[-1]) if matches else 0.0
+        # Read the score from the controller channel: candidate-controlled stdout —
+        # including atexit handlers — cannot spoof or reorder the trusted result.
+        try:
+            return float((await runtime.read(score_path)).decode().strip())
+        except (ValueError, UnicodeDecodeError):
+            return 0.0
 
     async def validate(self, runtime: vf.Runtime) -> bool:
         """Valid iff the gold solution scores 1.0: apply the reference source patch, then run

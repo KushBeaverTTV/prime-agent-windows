@@ -18,6 +18,10 @@ import pytest
 
 
 def emit(score: float) -> None:
+    # The sole trusted channel: the controller-generated unique file. Stdout is
+    # candidate-visible and can be spoofed by atexit handlers or test prints.
+    score_path = Path(os.environ["SCALESWE_SCORE_PATH"])
+    score_path.write_text(f"{score}\n")
     print(f"<score>{score}</score>")
     sys.stdout.flush()
 
