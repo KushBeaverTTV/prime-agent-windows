@@ -6581,15 +6581,20 @@ export class AgentSession {
 					return;
 				}
 
+				const forcedAllSteeringActionIds = this._forcedAllSteeringBatch(first);
 				const mode =
-					this._forcedAllSteeringMode(first) ??
-					(first.delivery === "next_turn_boundary" ? this.steeringMode : this.followUpMode);
+					forcedAllSteeringActionIds !== undefined
+						? "all"
+						: first.delivery === "next_turn_boundary"
+							? this.steeringMode
+							: this.followUpMode;
 				const actions: QueuedSessionAction[] = [first];
 				while (!preselected && mode === "all") {
 					const next = this._actionStore.queuedActions(first.delivery)[0];
 					if (
 						!next ||
 						next.payload.kind !== "turn" ||
+						(forcedAllSteeringActionIds !== undefined && !forcedAllSteeringActionIds.has(next.id)) ||
 						!turnExecutionPoliciesEqual(first.payload.executionPolicy, next.payload.executionPolicy)
 					) {
 						break;
@@ -7922,10 +7927,10 @@ export class AgentSession {
 		return true;
 	}
 
-	private _forcedAllSteeringMode(first: QueuedSessionAction): "all" | undefined {
+	private _forcedAllSteeringBatch(first: QueuedSessionAction): ReadonlySet<string> | undefined {
 		const armed = this._forcedAllSteeringActionIds;
 		if (armed === undefined) return undefined;
-		if (first.delivery === "next_turn_boundary" && armed.has(first.id)) return "all";
+		if (first.delivery === "next_turn_boundary" && armed.has(first.id)) return armed;
 		if (!this._actionStore.queuedActions("next_turn_boundary").some((action) => armed.has(action.id))) {
 			this._forcedAllSteeringActionIds = undefined;
 		}

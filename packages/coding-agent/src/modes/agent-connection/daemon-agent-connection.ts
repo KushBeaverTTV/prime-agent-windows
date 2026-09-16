@@ -1282,13 +1282,15 @@ export class DaemonAgentConnection implements AgentConnection {
 
 	async abortAndSendQueued(): Promise<void> {
 		if (!this.client.supportsServerCapability("abort_and_send_queued")) {
-			throw new DaemonCapabilityUnavailableError("abort_and_send_queued", "abort_and_send_queued");
+			await this.abort();
+			return;
 		}
 		try {
 			await this.requestOk({ type: "abort_and_send_queued", activeSessionId: this.activeSessionId });
 		} catch (error) {
 			if (isUnknownDaemonCommandError(error, "abort_and_send_queued")) {
-				throw new Error("the daemon is running an older build; restart the daemon and try again");
+				await this.abort();
+				return;
 			}
 			throw error;
 		}

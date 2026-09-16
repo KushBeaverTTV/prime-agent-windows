@@ -265,6 +265,8 @@ class FakeDaemonClient {
 						},
 					},
 				};
+			case "abort":
+				return success(command.id, command.type);
 			case "clear_queue":
 				return {
 					type: "response",
@@ -3577,9 +3579,12 @@ describe("DaemonAgentConnection deferred session events", () => {
 		capable.serverCapabilities.add("abort_and_send_queued");
 		await expect(send(capable)).resolves.toBeUndefined();
 		expect(capable.requests).toEqual([{ type: "abort_and_send_queued", activeSessionId: "active-1" }]);
-		await expect(send(new FakeDaemonClient())).rejects.toThrow("does not support abort_and_send_queued");
+		const older = new FakeDaemonClient();
+		await expect(send(older)).resolves.toBeUndefined();
+		expect(older.requests).toEqual([{ type: "abort", activeSessionId: "active-1" }]);
 		const stale = Object.assign(new FakeDaemonClient(), { abortAndSendQueuedUnknownCommand: true });
 		stale.serverCapabilities.add("abort_and_send_queued");
-		await expect(send(stale)).rejects.toThrow("the daemon is running an older build");
+		await expect(send(stale)).resolves.toBeUndefined();
+		expect(stale.requests.map(({ type }) => type)).toEqual(["abort_and_send_queued", "abort"]);
 	});
 });

@@ -1674,15 +1674,17 @@ describe("AgentSession queue regressions", () => {
 		harness.setResponses([
 			fauxAssistantMessage(fauxToolCall("wait", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("queued handled"),
+			fauxAssistantMessage("later handled"),
 		]);
 		await waitForToolStart;
 		await harness.session.steer("first");
 		await harness.session.steer("second");
 		expect(harness.session.abortAndSendQueued()).toBe(true);
+		await harness.session.steer("later");
 		releaseToolExecution();
 		await Promise.all([promptPromise, harness.session.waitForIdle()]);
-		expect(getUserTexts(harness)).toEqual(["start", "first", "second"]);
-		expect(getAssistantTexts(harness)).toEqual(["", "queued handled"]);
+		expect(getUserTexts(harness)).toEqual(["start", "first", "second", "later"]);
+		expect(getAssistantTexts(harness)).toEqual(["", "queued handled", "later handled"]);
 		expect(harness.session.steeringMode).toBe("one-at-a-time");
 		await harness.session.followUp("follow-up boundary");
 		expect(harness.session.abortAndSendQueued()).toBe(false);
