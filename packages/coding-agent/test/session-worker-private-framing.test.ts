@@ -1,7 +1,9 @@
+import { performance } from "node:perf_hooks";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
 	encodePrivateFrame,
+	type PrivateFrame,
 	PrivateFrameDecoder,
 	PrivateFramedChannel,
 	type PrivateFrameHeaderValidator,
@@ -64,6 +66,67 @@ describe("private worker framing", () => {
 		const decoder = new PrivateFrameDecoder(isTestHeader);
 		decoder.push(encodePrivateFrame({ type: "event" }, Buffer.from("body")).subarray(0, 9));
 		expect(() => decoder.finish()).toThrow("incomplete bytes");
+	});
+
+	it("decodes frames split one byte at a time", () => {
+		const frames = [
+			encodePrivateFrame({ type: "event", requestId: "one" }, Buffer.from([0, 1, 2, 255])),
+			encodePrivateFrame({ type: "response", requestId: "two" }, Buffer.from("payload")),
+			encodePrivateFrame({ type: "event" }, Buffer.alloc(0)),
+		];
+		const decoder = new PrivateFrameDecoder(isTestHeader);
+		const decoded: PrivateFrame<TestHeader>[] = [];
+		for (const byte of Buffer.concat(frames)) {
+			decoded.push(...decoder.push(Buffer.from([byte])));
+		}
+		decoder.finish();
+
+		expect(decoded).toEqual([
+			{ header: { type: "event", requestId: "one" }, payload: Buffer.from([0, 1, 2, 255]) },
+			{ header: { type: "response", requestId: "two" }, payload: Buffer.from("payload") },
+			{ header: { type: "event" }, payload: Buffer.alloc(0) },
+		]);
+	});
+
+	it("tracks unread bytes while frames span chunk boundaries", () => {
+		const frame = encodePrivateFrame({ type: "event" }, Buffer.from("a".repeat(100)));
+		const decoder = new PrivateFrameDecoder(isTestHeader);
+		expect(decoder.bufferedBytes).toBe(0);
+		decoder.push(frame.subarray(0, 20));
+		expect(decoder.bufferedBytes).toBe(20);
+		decoder.push(frame.subarray(20, 50));
+		expect(decoder.bufferedBytes).toBe(50);
+		// A complete frame is decoded in one push; nothing stays buffered.
+		const decoded = decoder.push(frame.subarray(50));
+		expect(decoded).toEqual([{ header: { type: "event" }, payload: Buffer.from("a".repeat(100)) }]);
+		expect(decoder.bufferedBytes).toBe(0);
+		decoder.finish();
+	});
+
+	it("decodes a large frame delivered in small chunks in near-linear time", () => {
+		// A decoder that re-copies its whole pending buffer on every socket read
+		// turns one ~8MB frame into ~8GB of memcpy at 4KB reads. A linear decoder
+		// finishes in well under a second; the quadratic one cannot. The budget
+		// stays generous so slow CI runners do not flake on the linear path.
+		const frame = encodePrivateFrame({ type: "event", requestId: "large" }, Buffer.alloc(8 * 1024 * 1024, 7));
+		const decoder = new PrivateFrameDecoder(isTestHeader);
+
+		const started = performance.now();
+		const decoded: PrivateFrame<TestHeader>[] = [];
+		for (let offset = 0; offset < frame.length; offset += 4096) {
+			decoded.push(...decoder.push(frame.subarray(offset, Math.min(offset + 4096, frame.length))));
+		}
+		const elapsed = performance.now() - started;
+
+		expect(decoded).toHaveLength(1);
+		expect(decoded[0]?.header).toEqual({ type: "event", requestId: "large" });
+		const payload = decoded[0]?.payload;
+		expect(payload?.length).toBe(8 * 1024 * 1024);
+		expect(payload?.[0]).toBe(7);
+		expect(payload?.[4 * 1024 * 1024]).toBe(7);
+		expect(payload?.[8 * 1024 * 1024 - 1]).toBe(7);
+		expect(elapsed).toBeLessThan(2000);
+		decoder.finish();
 	});
 
 	it("sends frames through a duplex channel without interpreting payload bytes", async () => {

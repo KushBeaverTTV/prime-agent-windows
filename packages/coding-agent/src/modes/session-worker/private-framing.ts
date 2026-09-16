@@ -51,7 +51,20 @@ export function encodePrivateFrame<THeader extends object>(
 }
 
 export class PrivateFrameDecoder<THeader extends object> {
-	private buffered: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+	/**
+	 * Received-but-unparsed bytes, kept as the chunks the socket delivered.
+	 *
+	 * We never concatenate into a single growing buffer: appending to one
+	 * accumulator on every socket read is O(n^2) when a single frame is split
+	 * across many reads (e.g. a multi-MB snapshot response arriving in 8KB
+	 * chunks). Instead, each chunk is stored as-is and a frame's bytes are
+	 * joined exactly once, when the frame completes. Mirrors the JSONL line
+	 * reader's rationale in ../rpc/jsonl.ts.
+	 */
+	private pending: Buffer[] = [];
+	private unreadBytes = 0;
+	/** Bytes already consumed within pending[0]. */
+	private offset = 0;
 
 	constructor(
 		private readonly validateHeader: PrivateFrameHeaderValidator<THeader>,
@@ -59,20 +72,20 @@ export class PrivateFrameDecoder<THeader extends object> {
 	) {}
 
 	get bufferedBytes(): number {
-		return this.buffered.length;
+		return this.unreadBytes;
 	}
 
 	push(chunk: Uint8Array): PrivateFrame<THeader>[] {
 		if (chunk.length > 0) {
-			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-			this.buffered = this.buffered.length === 0 ? buffer : Buffer.concat([this.buffered, buffer]);
+			this.pending.push(Buffer.isBuffer(chunk) ? (chunk as Buffer) : Buffer.from(chunk));
+			this.unreadBytes += chunk.length;
 		}
 
 		const frames: PrivateFrame<THeader>[] = [];
-		let offset = 0;
-		while (this.buffered.length - offset >= FRAME_PREFIX_BYTES) {
-			const headerLength = this.buffered.readUInt32BE(offset);
-			const payloadLength = this.buffered.readUInt32BE(offset + 4);
+		while (this.unreadBytes >= FRAME_PREFIX_BYTES) {
+			const prefix = this.slice(0, FRAME_PREFIX_BYTES);
+			const headerLength = prefix.readUInt32BE(0);
+			const payloadLength = prefix.readUInt32BE(4);
 			assertFrameLength("header length", headerLength, this.limits.maxHeaderBytes);
 			assertFrameLength("payload length", payloadLength, this.limits.maxPayloadBytes);
 			if (headerLength === 0) {
@@ -80,15 +93,15 @@ export class PrivateFrameDecoder<THeader extends object> {
 			}
 
 			const frameLength = FRAME_PREFIX_BYTES + headerLength + payloadLength;
-			if (this.buffered.length - offset < frameLength) {
+			if (this.unreadBytes < frameLength) {
 				break;
 			}
 
-			const headerStart = offset + FRAME_PREFIX_BYTES;
+			const headerStart = FRAME_PREFIX_BYTES;
 			const payloadStart = headerStart + headerLength;
 			let decoded: unknown;
 			try {
-				decoded = JSON.parse(this.buffered.toString("utf8", headerStart, payloadStart));
+				decoded = JSON.parse(this.slice(headerStart, payloadStart).toString("utf8"));
 			} catch (error) {
 				throw new Error(
 					`Invalid private frame header JSON: ${error instanceof Error ? error.message : String(error)}`,
@@ -100,20 +113,47 @@ export class PrivateFrameDecoder<THeader extends object> {
 
 			frames.push({
 				header: decoded,
-				payload: Buffer.from(this.buffered.subarray(payloadStart, payloadStart + payloadLength)),
+				payload: this.slice(payloadStart, frameLength),
 			});
-			offset += frameLength;
+			this.consume(frameLength);
 		}
 
-		if (offset > 0) {
-			this.buffered = Buffer.from(this.buffered.subarray(offset));
-		}
 		return frames;
 	}
 
 	finish(): void {
-		if (this.buffered.length !== 0) {
-			throw new Error(`Private frame channel ended with ${this.buffered.length} incomplete bytes`);
+		if (this.unreadBytes !== 0) {
+			throw new Error(`Private frame channel ended with ${this.unreadBytes} incomplete bytes`);
+		}
+	}
+
+	/** Copy [start, endExclusive) of the unread bytes across pending chunks. */
+	private slice(start: number, endExclusive: number): Buffer {
+		const parts: Buffer[] = [];
+		let position = 0;
+		for (let index = 0; index < this.pending.length && position < endExclusive; index++) {
+			const chunk = this.pending[index];
+			const usable = index === 0 ? chunk.subarray(this.offset) : chunk;
+			const chunkEnd = position + usable.length;
+			if (chunkEnd > start) {
+				parts.push(
+					usable.subarray(Math.max(start, position) - position, Math.min(endExclusive, chunkEnd) - position),
+				);
+			}
+			position = chunkEnd;
+		}
+		if (parts.length === 1) {
+			return Buffer.from(parts[0]);
+		}
+		return Buffer.concat(parts, endExclusive - start);
+	}
+
+	private consume(count: number): void {
+		this.unreadBytes -= count;
+		this.offset += count;
+		while (this.pending.length > 0 && this.offset >= this.pending[0].length) {
+			this.offset -= this.pending[0].length;
+			this.pending.shift();
 		}
 	}
 }
