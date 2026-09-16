@@ -769,9 +769,8 @@ async function bootstrapVenv(
 	const runtimeIdentity = await resolveRuntimeIdentity();
 
 	await run(uv, ["python", "install", PYTHON_VERSION]);
-	// Every kernel-venv package is managed through `uv pip install --python`, and
-	// nothing invokes the venv's own pip, so seeding pip/setuptools/wheel would add
-	// four extra downloads to every fresh install for no use.
+	// Nothing invokes the venv's own pip; every kernel-venv package is installed
+	// through `uv pip install --python`, so the venv is created unseeded.
 	await run(uv, ["venv", venv, "--python", PYTHON_VERSION]);
 	await run(uv, [
 		"pip",
