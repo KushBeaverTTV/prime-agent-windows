@@ -889,7 +889,8 @@ class HarnessState:
             "receiver_role='child', receiver_name=handle.name) for follow-ups.",
             "Swarm entries declare a validated DAG of subagent nodes in arguments['dag']: manage them with "
             "create_swarm/update_swarm/delete_swarm (create_swarm validates the DAG at write time); run them "
-            "with rlm.swarm.run(\"<id>\") once the executor lands in a follow-up PR.",
+            "with await rlm.swarm.run(\"<id>\"), watch with rlm.swarm.status(run_id), stop with "
+            "rlm.swarm.stop(run_id), and resume a paused run with rlm.swarm.resume(run_id).",
         ]
         for kind in _KINDS:
             records = self.list(kind)[:max_entries_per_kind]
