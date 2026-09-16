@@ -89,10 +89,11 @@ def compare(base: dict, head: dict) -> list[str]:
     if additional_failures >= MODEL_FAILURE_LIMIT:
         findings.append(f"Model failures increased by {additional_failures}.")
     for field, label in (("output_tokens", "Output tokens"), ("e2e_seconds", "Cumulative task time")):
-        if base[field] > 0 and head[field] / base[field] >= RATIO_LIMIT and resolved_delta <= 0:
-            findings.append(
-                f"{label} reached {head[field] / base[field]:.2f}x base without more resolutions."
-            )
+        ratio = head[field] / base[field] if base[field] > 0 else math.inf
+        if resolved_delta <= 0 and (
+            (base[field] == 0 and head[field] > 0) or (base[field] > 0 and ratio >= RATIO_LIMIT)
+        ):
+            findings.append(f"{label} reached {ratio:.2f}x base without more resolutions.")
     return findings
 
 

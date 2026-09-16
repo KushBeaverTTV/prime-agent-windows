@@ -76,6 +76,7 @@ def _resolve_filter_fn(expr: str):
 # The drop sweep must see untracked files too (--others): agent-added tests evade a
 # tracked-only sweep whether they were never staged or were unstaged by patch capture.
 RESTORE = r"""
+git rev-parse --verify "$base^{commit}" >/dev/null 2>&1 || exit 1
 git checkout "$base" -- tests/ test/ Test/ Tests/ 2>/dev/null || true
 git ls-tree -r --name-only "$base" 2>/dev/null | while IFS= read -r path; do
   case "$path" in
@@ -91,6 +92,12 @@ git ls-files --cached --others --exclude-standard 2>/dev/null | while IFS= read 
       fi ;;
   esac
 done
+# The tests must now be byte-identical to the trusted base; a corrupted repository or a
+# masked checkout failure fails closed instead of running agent-modified tests.
+git diff --quiet "$base" -- tests/ test/ Test/ Tests/ 2>/dev/null || {
+    git status --porcelain -- tests/ test/ Test/ Tests/ 2>/dev/null | head -5
+    exit 1
+}
 """
 
 PATCH = "/tmp/scaleswe_f2p.patch"
@@ -198,7 +205,14 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
         test_ids = self.data.fail_to_pass + self.data.pass_to_pass
         if not test_ids:
             return 0.0
-        await runtime.run(["sh", "-c", RESTORE], {**ENV, "base": self.data.base_commit})
+        restored = await runtime.run(["sh", "-c", RESTORE], {**ENV, "base": self.data.base_commit})
+        if restored.exit_code:
+            # The tests could not be proven identical to the trusted base (a corrupted
+            # repository or a masked restore). The task can never be resolved from here,
+            # but the paired run keeps its blast radius: score zero, never raise.
+            detail = (restored.stderr or restored.stdout or "").strip()[-500:]
+            print(f"scaleswe test restoration failed closed ({self.data.name}): {detail}")
+            return 0.0
         if self.data.f2p_patch.strip():
             await self._apply_patch(runtime, self.data.f2p_patch)
         if self.data.f2p_script:

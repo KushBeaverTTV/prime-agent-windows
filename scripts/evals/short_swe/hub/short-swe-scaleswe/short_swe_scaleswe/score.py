@@ -71,9 +71,8 @@ def main() -> None:
     xml_path = Path(os.environ["SCALESWE_RESULTS_XML"])
     xml_path.unlink(missing_ok=True)
     code = pytest.main(["-vv", f"--junitxml={xml_path}", "-o", "addopts=", "--rootdir=.", *expected])
-    if code == 0:
-        emit(1.0)
-        return
+    # Skipped, xfailed, or never-run expected tests exit 0 but are not passes; only the
+    # fresh JUnit report itself can award 1.0.
     if code not in (0, 1):
         emit(0.0)
         return

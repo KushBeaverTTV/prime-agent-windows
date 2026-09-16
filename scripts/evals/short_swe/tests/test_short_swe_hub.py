@@ -154,3 +154,33 @@ def test_packages_target_the_platform_hook_signatures() -> None:
     scaleswe = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
     assert "async def setup(self, runtime: vf.Runtime) -> None:" in scaleswe
     assert "async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:" in scaleswe
+
+
+def test_scaleswe_scorer_never_shortcuts_exit_zero() -> None:
+    scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
+    assert "if code == 0:" not in scorer
+    assert "only the\n    # fresh JUnit report itself can award 1.0" in scorer
+    assert scorer.count("emit(1.0 if all_passed(xml_content, expected) else 0.0)") == 1
+
+
+def test_pro_env_pins_the_isolated_verifier() -> None:
+    source = (module_dir("short-swe-pro") / "__init__.py").read_text()
+    assert "ISOLATED_VERIFIER = True" in source
+    assert "SCORING_SECONDS = 3600.0" in source
+    assert "FINALIZE_SECONDS = 3600.0" in source
+
+
+def test_install_enforces_archive_quotas() -> None:
+    harness = (module_dir("short-swe-verified") / "prime_agent_candidate.py").read_text()
+    assert "check_archive()" in harness
+    assert "-le 20000" in harness
+    assert "-le 2147483648" in harness
+
+
+def test_scaleswe_restore_fails_closed_without_blast_radius() -> None:
+    taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
+    assert 'git rev-parse --verify "$base^{commit}"' in taskset
+    assert 'git diff --quiet "$base" -- tests/ test/ Test/ Tests/' in taskset
+    assert "test restoration failed closed" in taskset
+    assert "return 0.0" in taskset
+    assert "scaleswe setup failed (" in taskset

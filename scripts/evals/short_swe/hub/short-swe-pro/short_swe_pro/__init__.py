@@ -6,7 +6,11 @@ from .taskset import ShortSWEProTaskset
 
 
 class ShortSWEProEnv(ShortSWEEnv):
-    """Pro tasks are graded by Harbor's own trusted in-task verifier."""
+    """Pro tasks grade in a fresh, network-free verifier box like Verified ones."""
+
+    ISOLATED_VERIFIER = True
+    SCORING_SECONDS = 3600.0
+    FINALIZE_SECONDS = 3600.0
 
 
 __all__ = ["ShortSWEProTaskset", "ShortSWEProEnv", "PrimeAgentCandidateHarness"]

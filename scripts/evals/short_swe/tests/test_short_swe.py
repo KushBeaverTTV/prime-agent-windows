@@ -669,3 +669,24 @@ def test_artifact_directory_rejects_intermediate_symlink(
     monkeypatch.setattr(builder, "ARTIFACT_RELATIVE", Path("linked/artifacts"))
     with pytest.raises(OSError):
         builder.open_candidate_artifacts()
+
+
+def test_compare_gates_positive_totals_over_a_zero_base() -> None:
+    base = {
+        "resolved": 5,
+        "model_failures": 0,
+        "uncached_input_tokens": 1,
+        "cached_input_tokens": 1,
+        "output_tokens": 0,
+        "e2e_seconds": 0.0,
+    }
+    head = {
+        "resolved": 5,
+        "model_failures": 0,
+        "uncached_input_tokens": 1,
+        "cached_input_tokens": 1,
+        "output_tokens": 100,
+        "e2e_seconds": 10.0,
+    }
+    findings = report.compare(base, head)
+    assert findings, "positive totals over a zero base must gate"

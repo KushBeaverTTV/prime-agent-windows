@@ -49,6 +49,15 @@ core_tarball="prime-agent-core-$PRIME_AGENT_RELEASE_VERSION.tgz"
 tui_tarball="prime-agent-tui-$PRIME_AGENT_RELEASE_VERSION.tgz"
 printf '%s\n' "$VF_PRIME_AGENT_SHA256SUMS" > "$source_dir/SHA256SUMS"
 (cd "$source_dir" && sha256sum -c SHA256SUMS)
+check_archive() {
+    entries=$(tar -tzf "$1" | wc -l)
+    [ "$entries" -le 20000 ] || { echo "archive has too many entries: $1"; exit 1; }
+    total=$(tar -tvzf "$1" | awk '{ s += $3 } END { printf "%d", s + 0 }')
+    [ "$total" -le 2147483648 ] || { echo "archive expands past its quota: $1"; exit 1; }
+}
+for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
+    check_archive "$source_dir/$tarball"
+done
 mkdir "$source_dir/core-root" "$source_dir/repacked-core"
 tar -xzf "$source_dir/$core_tarball" -C "$source_dir/core-root"
 node - \
