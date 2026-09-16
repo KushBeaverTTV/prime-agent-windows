@@ -181,12 +181,18 @@ def validate_oracle_episode(episode) -> None:
     if len(episode.traces) != 1:
         raise RuntimeError("SWE-bench oracle did not produce one trace")
     trace = episode.traces[0]
+    rewards = [
+        value for reward in trace.rewards.values() if reward for value in (reward.score, reward.weight)
+    ]
+    if any(isinstance(value, bool) or not math.isfinite(value) for value in rewards):
+        raise RuntimeError("SWE-bench gold-patch oracle produced non-finite rewards")
     if (
         episode.errors
         or task_name(trace) != "astropy__astropy-14096"
         or not trace.ok
         or not trace.is_completed
         or not scored(trace)
+        or not math.isfinite(trace.reward)
         or trace.reward <= 0
     ):
         raise RuntimeError("SWE-bench gold-patch oracle did not resolve")
