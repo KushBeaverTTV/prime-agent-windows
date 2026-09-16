@@ -309,6 +309,7 @@ describe("buildSystemPrompt", () => {
 						version: 1,
 					},
 				},
+				swarm: {},
 			},
 			refinements: [
 				{
@@ -405,6 +406,7 @@ describe("buildSystemPrompt", () => {
 				memory: memoryEntries,
 				skill: {},
 				subagent: {},
+				swarm: {},
 			},
 			refinements: [],
 		};
@@ -466,6 +468,7 @@ describe("buildSystemPrompt", () => {
 						version: 1,
 					},
 				},
+				swarm: {},
 			},
 			refinements: [],
 		};
@@ -516,6 +519,7 @@ describe("buildSystemPrompt", () => {
 						version: 1,
 					},
 				},
+				swarm: {},
 			},
 			refinements: [],
 		};

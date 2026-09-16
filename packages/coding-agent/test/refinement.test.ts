@@ -63,12 +63,27 @@ function makeTempDir(): string {
 	return tempDir;
 }
 
-const kinds = ["prompt", "memory", "skill", "subagent"] as const satisfies readonly RefinementKind[];
+const kinds = ["prompt", "memory", "skill", "subagent", "swarm"] as const satisfies readonly RefinementKind[];
 const skillReference = {
 	type: "python",
 	import: "agent_skills.example",
 	callable: "run",
 	call_pattern: "await run(...)",
+};
+const swarmDag = {
+	nodes: [
+		{
+			id: "collect",
+			subagent: "researcher",
+			outputs: [{ name: "findings", type: "text" }],
+		},
+		{
+			id: "review",
+			subagent: { prompt: "Review the findings." },
+			depends_on: ["collect"],
+			inputs: [{ name: "draft", type: "text", from: "collect.findings" }],
+		},
+	],
 };
 
 function proposal(summary: string, edits: RefinementProposal["edits"]): RefinementProposal {
@@ -116,13 +131,15 @@ function assistantText(text: string): AssistantMessage {
 }
 
 function seedEntry(state: HarnessState, kind: RefinementKind, id = `${kind}_entry`): void {
-	const skillArguments =
+	const kindArguments =
 		kind === "skill"
 			? {
 					reference: skillReference,
 					arguments: { input: { type: "string", required: true, description: "Task input" } },
 				}
-			: {};
+			: kind === "swarm"
+				? { arguments: { dag: swarmDag } }
+				: {};
 	applyRefinementProposal(
 		state,
 		proposal(`seed ${kind}`, [
@@ -133,7 +150,7 @@ function seedEntry(state: HarnessState, kind: RefinementKind, id = `${kind}_entr
 				title: `${kind} title`,
 				content: `${kind} content`,
 				path: `${kind}/path`,
-				...skillArguments,
+				...kindArguments,
 				metadata: { seeded: true },
 			},
 		]),
@@ -245,7 +262,9 @@ describe("harness refinement", () => {
 								reference: skillReference,
 								arguments: { input: { type: "string", required: true, description: "Task input" } },
 							}
-						: {}),
+						: kind === "swarm"
+							? { arguments: { dag: swarmDag } }
+							: {}),
 					metadata: { kind },
 				})),
 			),
@@ -289,7 +308,9 @@ describe("harness refinement", () => {
 									input: { type: "string", required: true, description: "Updated task input" },
 								},
 							}
-						: {}),
+						: kind === "swarm"
+							? { arguments: { dag: swarmDag } }
+							: {}),
 					metadata: { updated: kind },
 				})),
 			),
@@ -334,6 +355,101 @@ describe("harness refinement", () => {
 			expect(state.entries[kind][`${kind}_entry`]).toBeUndefined();
 		}
 		expect(state.refinements.at(-1)?.changes).toEqual(kinds.map((kind) => `delete ${kind}:${kind}_entry`));
+	});
+
+	it("requires a dag object in arguments for swarm creates and updates", () => {
+		const state = loadHarnessState(makeTempDir());
+
+		const missingDag = applyRefinementProposal(
+			state,
+			proposal("Create swarm without a dag", [
+				{
+					action: "create",
+					kind: "swarm",
+					id: "swarm_entry",
+					title: "Swarm title",
+					content: "Swarm content",
+				},
+			]),
+			{ id: "refine_swarm_missing_dag" },
+		);
+
+		expect(missingDag.appliedEdits[0]).toMatchObject({
+			applied: false,
+			error: "swarm entry requires a dag object in arguments",
+		});
+		expect(state.entries.swarm.swarm_entry).toBeUndefined();
+		expect(state.refinements.at(-1)?.changes).toEqual([]);
+
+		const nonObjectDag = applyRefinementProposal(
+			state,
+			proposal("Create swarm with a non-object dag", [
+				{
+					action: "create",
+					kind: "swarm",
+					id: "swarm_entry",
+					title: "Swarm title",
+					content: "Swarm content",
+					arguments: { dag: ["not", "an", "object"] },
+				},
+			]),
+			{ id: "refine_swarm_non_object_dag" },
+		);
+
+		expect(nonObjectDag.appliedEdits[0]).toMatchObject({
+			applied: false,
+			error: "swarm entry requires a dag object in arguments",
+		});
+
+		const created = applyRefinementProposal(
+			state,
+			proposal("Create swarm with a dag", [
+				{
+					action: "create",
+					kind: "swarm",
+					id: "swarm_entry",
+					title: "Swarm title",
+					content: "Swarm content",
+					path: "swarm/created",
+					arguments: { dag: swarmDag },
+					metadata: { kind: "swarm" },
+				},
+			]),
+			{ id: "refine_swarm_valid" },
+		);
+
+		expect(created.appliedEdits[0].applied).toBe(true);
+		expect(state.entries.swarm.swarm_entry.arguments).toEqual({ dag: swarmDag });
+
+		const updateWithoutDag = applyRefinementProposal(
+			state,
+			proposal("Update swarm without a dag", [
+				{
+					action: "update",
+					kind: "swarm",
+					id: "swarm_entry",
+					title: "Swarm title updated",
+					content: "Swarm content updated",
+				},
+			]),
+			{ id: "refine_swarm_update_missing_dag" },
+		);
+
+		expect(updateWithoutDag.appliedEdits[0]).toMatchObject({
+			applied: false,
+			error: "swarm entry requires a dag object in arguments",
+		});
+		expect(state.entries.swarm.swarm_entry.title).toBe("Swarm title");
+	});
+
+	it("renders the swarm invoke contract in the harness digest", () => {
+		const state = loadHarnessState(makeTempDir());
+		seedEntry(state, "swarm", "sweep");
+
+		const digest = formatHarnessStateForPrompt(state);
+
+		expect(digest).toContain("swarm: 1");
+		expect(digest).toContain("await rlm.swarm.run('<id>')");
 	});
 
 	it("applies create, update, and delete edits to editable continual harness state", () => {
@@ -678,7 +794,7 @@ describe("harness refinement", () => {
 
 			const state = loadHarnessState(dir);
 
-			expect(state.entries).toEqual({ prompt: {}, memory: {}, skill: {}, subagent: {} });
+			expect(state.entries).toEqual({ prompt: {}, memory: {}, skill: {}, subagent: {}, swarm: {} });
 			expect(state.refinements).toEqual([]);
 			applyRefinementProposal(
 				state,
@@ -751,7 +867,9 @@ describe("harness refinement", () => {
 									input: { type: "string", required: true, description: "Replacement input" },
 								},
 							}
-						: {}),
+						: kind === "swarm"
+							? { arguments: { dag: swarmDag } }
+							: {}),
 				},
 			]),
 			{ id: `refine_duplicate_${kind}` },
@@ -787,7 +905,9 @@ describe("harness refinement", () => {
 								reference: skillReference,
 								arguments: { input: { type: "string", required: true, description: "Missing input" } },
 							}
-						: {}),
+						: kind === "swarm"
+							? { arguments: { dag: swarmDag } }
+							: {}),
 				},
 			]),
 			{ id: `refine_missing_update_${kind}` },
