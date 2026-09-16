@@ -37,6 +37,56 @@ PINNED_LIMITS = {
 ROLLOUT_SECONDS = 3_600.0
 
 
+def pin_agent_identity(config):
+    """Pin the shared solver identity: limits, rollout deadline, and network-free runtime.
+
+    Hosted runs build configs without the release TOML, so any value the caller leaves
+    unset is pinned to the published identity; explicit values stay for trusted local
+    controls and ride along in each trace for gate validation.
+    """
+    agent = config.agent
+    updates: dict = {}
+    for field, value in PINNED_LIMITS.items():
+        current = getattr(agent, field)
+        if current is None:
+            updates[field] = value
+        elif current != value:
+            logger.warning("short-swe: agent %s=%s differs from the pinned identity", field, current)
+    timeout_updates: dict = {}
+    if agent.timeout.rollout is None:
+        timeout_updates["rollout"] = ROLLOUT_SECONDS
+    elif agent.timeout.rollout != ROLLOUT_SECONDS:
+        logger.warning(
+            "short-swe: rollout timeout %s differs from the pinned identity",
+            agent.timeout.rollout,
+        )
+    if timeout_updates:
+        updates["timeout"] = agent.timeout.model_copy(update=timeout_updates)
+    updates["runtime"] = pin_network_free_runtime(agent.runtime, "task")
+    agent = agent.model_copy(update=updates)
+    return config.model_copy(update={"agent": agent})
+
+
+def pin_network_free_runtime(runtime, role: str):
+    if not isinstance(runtime, PrimeConfig):
+        raise ValueError(f"short-swe {role} runtime must be a prime sandbox")
+    if runtime.allow == ["*"] or runtime.allow is None:
+        # The AgentConfig default grants egress; the published identity is network-free.
+        evaluation = os.environ.get("EVALUATION_ID") or "local"
+        return PrimeConfig(
+            allow=[],
+            vm=True,
+            labels=runtime.labels or _labels_for(evaluation, role),
+        )
+    if runtime.allow != []:
+        raise ValueError(f"short-swe {role} runtime must be network-free (allow=[])")
+    return runtime.model_copy(update={"vm": True})
+
+
+def _labels_for(evaluation: str, role: str) -> list[str]:
+    return ["prime-agent-behavioral-v1", f"evaluation:{evaluation}", f"role:{role}"]
+
+
 class CredentialFreeHarborTask(HarborTask):
     """Harbor task whose runtime environment never receives controller credentials."""
 
@@ -47,7 +97,9 @@ class CredentialFreeHarborTask(HarborTask):
         return env
 
 
-class SecureVerifiedMixin:
+class SecureStagingMixin:
+    """Reset a fresh verifier box to the trusted base and apply the candidate patch."""
+
     async def setup(self, runtime: Runtime) -> None:
         await super().setup(runtime)
         if not self.data.name.endswith(" (verifier)"):
@@ -59,7 +111,7 @@ class SecureVerifiedMixin:
         )
         if result.exit_code:
             detail = (result.stderr or result.stdout).strip()[-2_000:]
-            raise RuntimeError(f"could not reset SWE-bench verifier to its trusted base: {detail}")
+            raise RuntimeError(f"could not reset the verifier to its trusted base: {detail}")
 
     async def stage_verifier(self, trace: vf.Trace, runtime: Runtime) -> None:
         await super().stage_verifier(trace, runtime)
@@ -71,6 +123,8 @@ class SecureVerifiedMixin:
             detail = (result.stderr or result.stdout).strip()[-2_000:]
             raise RuntimeError(f"candidate patch did not apply in verifier: {detail}")
 
+
+class SecureVerifiedMixin(SecureStagingMixin):
     async def run_verifier(self, runtime: Runtime, trace: vf.Trace) -> float:
         script = rewrite_test_script((await runtime.read("/tests/test.sh", max_bytes=2_000_000)).decode())
         await runtime.write("/tests/test.sh", script.encode())
@@ -153,43 +207,18 @@ class ShortSWEEnv(SecureHarbor):
 
     def _labels(self, role: str) -> list[str]:
         evaluation = os.environ.get("EVALUATION_ID") or "local"
-        return ["prime-agent-behavioral-v1", f"evaluation:{evaluation}", f"role:{role}"]
-
-    def _pin_runtime(self, runtime, role: str):
-        if not isinstance(runtime, PrimeConfig):
-            raise ValueError(f"short-swe {role} runtime must be a prime sandbox")
-        if runtime.allow == ["*"] or runtime.allow is None:
-            # The AgentConfig default grants egress; the published identity is network-free.
-            return PrimeConfig(allow=[], vm=True, labels=runtime.labels or self._labels(role))
-        if runtime.allow != []:
-            raise ValueError(f"short-swe {role} runtime must be network-free (allow=[])")
-        return runtime.model_copy(update={"vm": True})
+        return _labels_for(evaluation, role)
 
     def _pin(self, config: SecureHarborConfig) -> SecureHarborConfig:
+        config = pin_agent_identity(config)
         agent = config.agent
-        updates: dict = {}
-        for field, value in PINNED_LIMITS.items():
-            current = getattr(agent, field)
-            if current is None:
-                updates[field] = value
-            elif current != value:
-                logger.warning("short-swe: agent %s=%s differs from the pinned identity", field, current)
-        timeout_updates: dict = {}
-        if agent.timeout.rollout is None:
-            timeout_updates["rollout"] = ROLLOUT_SECONDS
-        elif agent.timeout.rollout != ROLLOUT_SECONDS:
-            logger.warning(
-                "short-swe: rollout timeout %s differs from the pinned identity",
-                agent.timeout.rollout,
-            )
         if self.SCORING_SECONDS is not None and agent.timeout.scoring is None:
-            timeout_updates["scoring"] = self.SCORING_SECONDS
-        if timeout_updates:
-            updates["timeout"] = agent.timeout.model_copy(update=timeout_updates)
-        updates["runtime"] = self._pin_runtime(agent.runtime, "task")
-        agent = agent.model_copy(update=updates)
+            agent = agent.model_copy(
+                update={"timeout": agent.timeout.model_copy(update={"scoring": self.SCORING_SECONDS})}
+            )
+            config = config.model_copy(update={"agent": agent})
 
-        env_updates: dict = {"agent": agent}
+        env_updates: dict = {}
         if self.FINALIZE_SECONDS is not None and config.timeout.finalize is None:
             env_updates["timeout"] = config.timeout.model_copy(update={"finalize": self.FINALIZE_SECONDS})
         if self.ISOLATED_VERIFIER:
@@ -199,6 +228,6 @@ class ShortSWEEnv(SecureHarbor):
             if verifier.runtime is None:
                 runtime = PrimeConfig(allow=[], vm=True, labels=self._labels("verifier"))
             else:
-                runtime = self._pin_runtime(verifier.runtime, "verifier")
+                runtime = pin_network_free_runtime(verifier.runtime, "verifier")
             env_updates["verifier"] = verifier.model_copy(update={"retries": 0, "runtime": runtime})
         return config.model_copy(update=env_updates)

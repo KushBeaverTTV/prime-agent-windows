@@ -14,8 +14,11 @@ from typing import Literal
 import verifiers.v1 as vf
 from pydantic import Field
 from verifiers.v1.tasksets.harbor import HarborConfig, HarborTaskset
+from verifiers.v1.tasksets.harbor.taskset import CollectHook, VerifierConfig
+from verifiers.v1.utils.artifacts import Artifact
 
-from .secure_harbor import CredentialFreeHarborTask
+from .secure_harbor import CredentialFreeHarborTask, SecureStagingMixin
+from .verified_verifier import patch_collect_command
 
 IMAGE_REPO = "jefzda/sweap-images"
 
@@ -31,8 +34,8 @@ FIXED_TASKS = (
 )
 
 
-class ShortSWEProTask(CredentialFreeHarborTask):
-    pass
+class ShortSWEProTask(SecureStagingMixin, CredentialFreeHarborTask):
+    """Graded in a fresh, network-free verifier box the candidate never touched."""
 
 
 class ShortSWEProConfig(HarborConfig):
@@ -46,7 +49,18 @@ class ShortSWEProConfig(HarborConfig):
 class ShortSWEProTaskset(HarborTaskset, vf.Taskset[ShortSWEProTask, ShortSWEProConfig]):
     def load(self) -> Iterator[ShortSWEProTask]:
         for task in super().load():
-            config = json.loads((Path(task.data.task_dir) / "tests" / "config.json").read_text())
+            task_dir = Path(task.data.task_dir)
+            if task.data.artifacts or task.data.collect or task.data.verifier is not None:
+                raise ValueError(f"{task.data.name}: unexpected verifier transfer configuration")
+            config = json.loads((task_dir / "tests" / "config.json").read_text())
             image = f"{IMAGE_REPO}:{config['dockerhub_tag']}"
-            data = task.data.model_copy(update={"image": image, "workdir": "/app"})
+            data = task.data.model_copy(
+                update={
+                    "image": image,
+                    "workdir": "/app",
+                    "artifacts": [Artifact(source="/tmp/prime-agent.patch")],
+                    "collect": [CollectHook(command=patch_collect_command(task_dir))],
+                    "verifier": VerifierConfig(fresh_copy=True, network_allow=[]),
+                }
+            )
             yield ShortSWEProTask(data, task.config)

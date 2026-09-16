@@ -165,3 +165,52 @@ def test_launch_uses_the_request_pr_key(tmp_path: Path) -> None:
     hosted = Path(source).read_text()
     assert "request['pr']" in hosted
     assert "pull_request'" not in hosted
+
+
+def test_launch_stops_created_evaluations_when_a_spawn_fails(tmp_path: Path, monkeypatch) -> None:
+    _write_inputs(tmp_path)
+    stopped = []
+
+    def fake_popen(command, **kwargs):
+        if len(stopped) == 2:  # third launch fails after two started
+            raise OSError("spawn failed")
+        stopped.append(None)
+        log = kwargs["stdout"]
+        name = command[command.index("--eval-name") + 1]
+        log.write(f"Evaluation ID: id-{name}\n")
+        log.flush()
+        return FakePopen(command)
+
+    def fake_run(command, **kwargs):
+        if command[:3] == ["prime", "eval", "stop"]:
+            stopped.append(command[3])
+        return "{}"
+
+    monkeypatch.setattr(hosted_eval.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(hosted_eval, "run", lambda *a, **k: "{}")
+    monkeypatch.setattr(hosted_eval.subprocess, "run", lambda command, **kwargs: fake_run(command))
+    args = type(
+        "Args",
+        (),
+        {
+            "request": str(tmp_path / "request.json"),
+            "sources": str(tmp_path / "sources.json"),
+            "output": str(tmp_path / "hosted"),
+            "model": None,
+        },
+    )()
+    try:
+        hosted_eval.launch(args)
+        raise AssertionError("partial launch did not fail")
+    except OSError:
+        pass
+    # Both already-created evaluations are stopped by ids parsed from their launcher logs.
+    assert stopped[:2] == [None, None]
+    assert len(stopped) == 4 and all(isinstance(value, str) for value in stopped[2:])
+
+
+def test_hosted_budgets_fit_the_github_job_limit() -> None:
+    assert hosted_eval.HOSTED_EVALUATION_TIMEOUT_MINUTES == 300
+    source = hosted_eval.__file__
+    text = Path(source).read_text()
+    assert "deadline = time.time() + 330 * 60" in text

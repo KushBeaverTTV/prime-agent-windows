@@ -59,6 +59,37 @@ def test_scaleswe_filter_selects_the_slice_and_keeps_all_images() -> None:
     assert "filter_unavailable_images: bool = False" in source
 
 
+def test_verified_and_pro_tasks_grade_in_fresh_verifiers() -> None:
+    for package in ("short-swe-verified", "short-swe-pro"):
+        marker = '"verifier": VerifierConfig(fresh_copy=True, network_allow=[])'
+        source = (module_dir(package) / "taskset.py").read_text()
+        assert marker in source, package
+        assert 'Artifact(source="/tmp/prime-agent.patch")' in source, package
+        assert "patch_collect_command(" in source, package
+
+
+def test_scaleswe_env_is_a_pinned_single_agent_env() -> None:
+    source = (module_dir("short-swe-scaleswe") / "__init__.py").read_text()
+    assert "vf.SingleAgentEnv" in source
+    assert "pin_agent_identity" in source
+    assert "ShortSWEEnv" not in source
+
+
+def test_pro_tasks_do_not_use_the_swebench_parser() -> None:
+    source = (module_dir("short-swe-pro") / "taskset.py").read_text()
+    assert "SecureStagingMixin" in source
+    assert "run_verifier" not in source
+
+
+def test_scaleswe_scorer_fails_closed() -> None:
+    scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
+    assert "unlink(missing_ok=True)" in scorer
+    assert "SCALESWE_RESULTS_XML" in scorer
+    taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
+    assert '"python", "-I"' in taskset
+    assert "uuid4" in taskset
+
+
 def test_each_package_exports_one_taskset_env_and_harness() -> None:
     for package, (_, taskset_name, env_name) in PACKAGES.items():
         source = (module_dir(package) / "__init__.py").read_text()

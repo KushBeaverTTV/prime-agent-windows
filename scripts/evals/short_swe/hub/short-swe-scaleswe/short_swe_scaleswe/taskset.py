@@ -15,6 +15,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 import verifiers.v1 as vf
 from verifiers.v1 import capture_patch
@@ -93,8 +94,6 @@ done
 """
 
 PATCH = "/tmp/scaleswe_f2p.patch"
-SCORER = "/tmp/scaleswe_scorer.py"
-TEST_IDS = "/tmp/scaleswe_test_ids.json"
 SCORER_SRC = (Path(__file__).parent / "score.py").read_bytes()
 
 
@@ -204,9 +203,18 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
             await self._apply_patch(runtime, self.data.f2p_patch)
         if self.data.f2p_script:
             await runtime.write("test_fail_to_pass.py", self.data.f2p_script.encode())
-        await runtime.write(SCORER, SCORER_SRC)
-        await runtime.write(TEST_IDS, json.dumps(test_ids).encode())
-        result = await runtime.run(["python", SCORER, TEST_IDS], ENV)
+        # Unique controller-generated paths plus `python -I` keep the scorer and its
+        # JUnit report away from anything the candidate could pre-place or shadow.
+        token = uuid4().hex[:12]
+        scorer = f"/tmp/scaleswe_scorer_{token}.py"
+        test_ids_path = f"/tmp/scaleswe_test_ids_{token}.json"
+        results = f"/tmp/scaleswe_results_{token}.xml"
+        await runtime.write(scorer, SCORER_SRC)
+        await runtime.write(test_ids_path, json.dumps(test_ids).encode())
+        result = await runtime.run(
+            ["python", "-I", scorer, test_ids_path],
+            {**ENV, "SCALESWE_RESULTS_XML": results},
+        )
         matches = SCORE_RE.findall(result.stdout)
         return float(matches[-1]) if matches else 0.0
 

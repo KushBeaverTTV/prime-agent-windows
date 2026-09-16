@@ -22,6 +22,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent.parent))
 
+HOSTED_EVALUATION_TIMEOUT_MINUTES = 300
+"""The GitHub-hosted runner enforces a hard 360-minute job limit; the hosted suite must
+finish (and its episodes collect) inside that budget or the check fails closed."""
+
 HOSTED_ENVIRONMENTS = {
     "swebench-verified": "primeintellect/short-swe-verified",
     "swebench-pro": "primeintellect/short-swe-pro",
@@ -79,7 +83,7 @@ def launch(args: argparse.Namespace) -> None:
                 "--max-concurrent",
                 str(manifest["max_concurrent"]),
                 "--timeout-minutes",
-                "1440",
+                str(HOSTED_EVALUATION_TIMEOUT_MINUTES),
                 "--eval-name",
                 name,
                 "--custom-secrets",
@@ -87,12 +91,17 @@ def launch(args: argparse.Namespace) -> None:
             ]
             log_path = logs / f"{side}-{taskset_id}.log"
             log = log_path.open("w")
-            subprocess.Popen(
-                command,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
+            try:
+                subprocess.Popen(
+                    command,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+            except BaseException:
+                log.close()
+                stop_started(runs)
+                raise
             runs[f"{side}/{taskset_id}"] = {
                 "environment": environment,
                 "name": name,
@@ -114,6 +123,7 @@ def launch(args: argparse.Namespace) -> None:
         time.sleep(5)
     missing = [key for key in runs if key not in assigned]
     if missing:
+        stop_started(runs)
         for key in missing:
             print(Path(runs[key]["log"]).read_text(errors="replace")[-2000:], file=sys.stderr)
         raise RuntimeError(f"hosted evaluations did not start: {missing}")
@@ -123,9 +133,29 @@ def launch(args: argparse.Namespace) -> None:
     print(json.dumps({key: value["evaluation_id"] for key, value in runs.items()}, indent=2))
 
 
+def stop_started(runs: dict[str, dict]) -> None:
+    """Stop every hosted evaluation a partial launch already created."""
+    for record in runs.values():
+        evaluation_id = record.get("evaluation_id")
+        if not evaluation_id:
+            try:
+                text = Path(record["log"]).read_text(errors="replace")
+            except OSError:
+                continue
+            match = EVAL_ID_RE.search(text)
+            if not match:
+                continue
+            evaluation_id = match.group(1)
+        subprocess.run(
+            ["prime", "eval", "stop", evaluation_id],
+            capture_output=True,
+            text=True,
+        )
+
+
 def wait(args: argparse.Namespace) -> None:
     runs = json.loads((Path(args.output) / "hosted-runs.json").read_text())
-    deadline = time.time() + 24 * 3600
+    deadline = time.time() + 330 * 60
     failures = []
     for key, record in runs.items():
         while True:

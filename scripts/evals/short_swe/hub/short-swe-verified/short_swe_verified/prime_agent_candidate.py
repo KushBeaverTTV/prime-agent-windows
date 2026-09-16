@@ -69,7 +69,7 @@ node - \
     "$source_dir/package-root/package/package.json" \
     "$source_dir/$ai_tarball" \
     "$source_dir/repacked-core/$repacked_core" \
-    "$source_dir/tui_tarball" <<'NODE'
+    "$source_dir/$tui_tarball" <<'NODE'
 const fs = require("node:fs");
 const [manifestPath, ai, core, tui] = process.argv.slice(2);
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));

@@ -114,10 +114,14 @@ def aggregate_side(tasks: list[dict]) -> dict:
 
 
 def validate_result(result: dict, request: dict) -> tuple[dict, dict]:
+    pinned = {
+        "internal/glm-5.3-fast",
+        "internal/deepseek-v4.1-flash",
+    }
     if (
         result.get("schema_version") != 1
         or result.get("request") != request
-        or result.get("model") != "internal/glm-5.3-fast"
+        or result.get("model") not in pinned
     ):
         raise ValueError("result identity does not match the trusted request")
     sides = result.get("sides")
@@ -148,7 +152,7 @@ def render(result: dict, request: dict, evaluations: dict | None = None) -> tupl
         f"### Behavioral evaluation — {verdict}",
         "",
         f"PR head `{request['head_sha'][:8]}` compared with exact base `{request['base_sha'][:8]}`.",
-        "Model `internal/glm-5.3-fast`. Inference cost: **$0**.",
+        f"Model `{result['model']}`. Inference cost: **$0**.",
         "Time is summed across task traces; concurrent tasks overlap in wall-clock time.",
         "",
         "| Metric | Exact base | PR head | Change |",

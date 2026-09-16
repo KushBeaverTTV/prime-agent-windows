@@ -1,23 +1,20 @@
 """Run the merged F2P+P2P pytest ids and emit 1.0 iff every expected id passed.
 
 Run inside the task's repo (cwd) by the testbed python (which has pytest + the project
-installed) — NOT a uv script, since the tests need the project's own environment. argv[1]
-is the path to a JSON file of pytest node ids (a file, not inline, so a large id list can't
-overflow the sandbox exec command line). We write JUnit XML and match each expected id against
-it (a pytest node id and the JUnit classname/name don't line up, so we try a few forms).
-
-The score is emitted in a bounded `<score>…</score>` tag rather than as the last stdout line,
-since pytest's `-vv` output and our print can interleave. Any failure emits 0.0.
+installed). argv[1] is the path to a JSON file of pytest node ids; the JUnit XML path
+arrives in ``SCALESWE_RESULTS_XML`` (a controller-generated unique path, so no stale or
+planted report can be parsed). The previous report is deleted before pytest runs and a
+pytest crash fail-closes to 0.0.
 """
 
 import json
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import pytest
-
-XML = "/tmp/scaleswe_results.xml"
 
 
 def emit(score: float) -> None:
@@ -71,9 +68,17 @@ def main() -> None:
     if not expected:
         emit(0.0)
         return
-    pytest.main(["-vv", f"--junitxml={XML}", "-o", "addopts=", "--rootdir=.", *expected])
+    xml_path = Path(os.environ["SCALESWE_RESULTS_XML"])
+    xml_path.unlink(missing_ok=True)
+    code = pytest.main(["-vv", f"--junitxml={xml_path}", "-o", "addopts=", "--rootdir=.", *expected])
+    if code == 0:
+        emit(1.0)
+        return
+    if code not in (0, 1):
+        emit(0.0)
+        return
     try:
-        xml_content = open(XML).read()
+        xml_content = xml_path.read_text()
     except OSError:
         emit(0.0)
         return
