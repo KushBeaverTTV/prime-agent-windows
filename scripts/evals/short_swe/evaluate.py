@@ -105,7 +105,8 @@ def validate_timing(trace) -> float:
     return total + verifier
 
 
-def provider_usage(trace, identity: str):
+def provider_usage(trace, identity: str) -> tuple[int, int, int]:
+    """Provider token buckets, as zeroes when a model failure reported no usage."""
     for call in trace.calls:
         if call.error is not None:
             continue
@@ -118,9 +119,13 @@ def provider_usage(trace, identity: str):
         if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
             raise ValueError(f"{identity} has incomplete provider usage")
     usage = trace.usage
-    if usage is None or usage.cached_input_tokens is None:
+    if usage is None:
+        if trace.ok:
+            raise ValueError(f"{identity} has incomplete provider usage")
+        return (0, 0, 0)
+    if usage.cached_input_tokens is None:
         raise ValueError(f"{identity} has incomplete provider usage")
-    return usage
+    return (usage.prompt_tokens, usage.cached_input_tokens, usage.completion_tokens)
 
 
 def trace_record(episode, taskset: str) -> dict:
@@ -132,7 +137,7 @@ def trace_record(episode, taskset: str) -> dict:
         raise ValueError(f"{identity} did not produce a complete trace or model outcome")
     validate_graph(trace)
     _ = trace.branches
-    usage = provider_usage(trace, identity)
+    uncached_input_tokens, cached_input_tokens, output_tokens = provider_usage(trace, identity)
     rewards = [
         value for reward in trace.rewards.values() if reward for value in (reward.score, reward.weight)
     ]
@@ -147,9 +152,9 @@ def trace_record(episode, taskset: str) -> dict:
         "model": models.pop(),
         "resolved": trace.ok and scored(trace) and trace.reward > 0,
         "model_failure": not trace.ok,
-        "uncached_input_tokens": usage.prompt_tokens,
-        "cached_input_tokens": usage.cached_input_tokens,
-        "output_tokens": usage.completion_tokens,
+        "uncached_input_tokens": uncached_input_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "output_tokens": output_tokens,
         "e2e_seconds": validate_timing(trace),
         "model_calls": len(trace.calls),
     }

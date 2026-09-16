@@ -366,6 +366,29 @@ def test_scored_model_timeout_is_an_outcome_but_incomplete_trace_fails() -> None
         evaluate.trace_record(SimpleNamespace(traces=[incomplete], errors=[], ok=False), "suite")
 
 
+def test_model_failure_without_reported_usage_records_zero_tokens() -> None:
+    failure = fake_trace(ok=False, timeout=True)
+    failure.rewards = {}
+    failure.reward = 0.0
+    failure.usage = None
+    provider_error = SimpleNamespace(type="ProviderError", status_code=503, message="connection reset")
+    failure.calls[0].error = provider_error
+    failure.calls[0].usage = None
+    failure.errors = [provider_error]
+    record = evaluate.trace_record(SimpleNamespace(traces=[failure], errors=[], ok=False), "suite")
+    assert record["model_failure"] is True
+    assert (record["uncached_input_tokens"], record["cached_input_tokens"], record["output_tokens"]) == (
+        0,
+        0,
+        0,
+    )
+    scored = fake_trace()
+    scored.usage = None
+    scored.calls[0].usage = None
+    with pytest.raises(ValueError, match="incomplete provider usage"):
+        evaluate.trace_record(SimpleNamespace(traces=[scored], errors=[], ok=True), "suite")
+
+
 @pytest.mark.parametrize(
     ("start", "end"),
     ((float("nan"), 2.0), (1.0, float("inf")), (3.0, 2.0), (0.0, 2.0)),
