@@ -2,6 +2,9 @@ import type { Duplex } from "node:stream";
 
 const FRAME_PREFIX_BYTES = 8;
 
+/** Minimum spent entries before compaction splices the consumed prefix away. */
+const PENDING_COMPACTION_MIN_HEAD = 32;
+
 export interface PrivateFrameLimits {
 	maxHeaderBytes: number;
 	maxPayloadBytes: number;
@@ -58,12 +61,17 @@ export class PrivateFrameDecoder<THeader extends object> {
 	 * accumulator on every socket read is O(n^2) when a single frame is split
 	 * across many reads (e.g. a multi-MB snapshot response arriving in 8KB
 	 * chunks). Instead, each chunk is stored as-is and a frame's bytes are
-	 * joined exactly once, when the frame completes. Mirrors the JSONL line
-	 * reader's rationale in ../rpc/jsonl.ts.
+	 * joined exactly once, when the frame completes. Spent chunks are skipped
+	 * via a head cursor rather than shifted off one per chunk — shifting every
+	 * fully consumed chunk is itself quadratic in the chunk count — and the
+	 * spent prefix is compacted in amortized O(1) per chunk. Mirrors the JSONL
+	 * line reader's rationale in ../rpc/jsonl.ts.
 	 */
 	private pending: Buffer[] = [];
 	private unreadBytes = 0;
-	/** Bytes already consumed within pending[0]. */
+	/** Index of the first chunk still holding unread bytes; entries before it are spent. */
+	private head = 0;
+	/** Bytes already consumed within pending[head]. */
 	private offset = 0;
 
 	constructor(
@@ -131,9 +139,9 @@ export class PrivateFrameDecoder<THeader extends object> {
 	private slice(start: number, endExclusive: number): Buffer {
 		const parts: Buffer[] = [];
 		let position = 0;
-		for (let index = 0; index < this.pending.length && position < endExclusive; index++) {
+		for (let index = this.head; index < this.pending.length && position < endExclusive; index++) {
 			const chunk = this.pending[index];
-			const usable = index === 0 ? chunk.subarray(this.offset) : chunk;
+			const usable = index === this.head ? chunk.subarray(this.offset) : chunk;
 			const chunkEnd = position + usable.length;
 			if (chunkEnd > start) {
 				parts.push(
@@ -151,9 +159,25 @@ export class PrivateFrameDecoder<THeader extends object> {
 	private consume(count: number): void {
 		this.unreadBytes -= count;
 		this.offset += count;
-		while (this.pending.length > 0 && this.offset >= this.pending[0].length) {
-			this.offset -= this.pending[0].length;
-			this.pending.shift();
+		while (this.head < this.pending.length && this.offset >= this.pending[this.head].length) {
+			this.offset -= this.pending[this.head].length;
+			this.head++;
+		}
+
+		// Fully drained: clear in one shot instead of one shift per chunk.
+		if (this.head === this.pending.length) {
+			this.pending.length = 0;
+			this.head = 0;
+			this.offset = 0;
+			return;
+		}
+
+		// Splicing moves pending.length - head entries. At this threshold that is
+		// at most head, and head only advances by one per consumed chunk, so
+		// compaction stays amortized O(1) per chunk.
+		if (this.head >= PENDING_COMPACTION_MIN_HEAD && this.head * 2 >= this.pending.length) {
+			this.pending.splice(0, this.head);
+			this.head = 0;
 		}
 	}
 }

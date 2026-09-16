@@ -129,6 +129,62 @@ describe("private worker framing", () => {
 		decoder.finish();
 	});
 
+	it("consumes a frame split across many chunks without calling Array.prototype.shift", () => {
+		// The decoder used to shift every fully consumed chunk off the pending
+		// queue, so a frame delivered in N small socket writes cost O(N^2)
+		// array element moves inside a single consume() call. A head cursor skips
+		// spent chunks instead of shifting them, so a fully synchronous decode
+		// loop run under a shift-counting Array.prototype.shift patch must see
+		// zero shift calls.
+		const frame = encodePrivateFrame({ type: "event", requestId: "large" }, Buffer.alloc(8 * 1024 * 1024, 3));
+		const decoder = new PrivateFrameDecoder(isTestHeader);
+		const decoded: PrivateFrame<TestHeader>[] = [];
+
+		const originalShift = Array.prototype.shift;
+		let shiftCalls = 0;
+		Array.prototype.shift = function (this: unknown[]): unknown {
+			shiftCalls += 1;
+			return originalShift.apply(this);
+		};
+		try {
+			for (let offset = 0; offset < frame.length; offset += 1024) {
+				decoded.push(...decoder.push(frame.subarray(offset, Math.min(offset + 1024, frame.length))));
+			}
+		} finally {
+			Array.prototype.shift = originalShift;
+		}
+
+		expect(shiftCalls).toBe(0);
+		expect(decoded).toHaveLength(1);
+		expect(decoded[0]?.header).toEqual({ type: "event", requestId: "large" });
+		expect(decoded[0]?.payload.length).toBe(8 * 1024 * 1024);
+		decoder.finish();
+	});
+
+	it("decodes a large frame delivered in tiny chunks within a per-chunk work budget", () => {
+		// Per-chunk bookkeeping costs scale with the chunk count, not just total
+		// bytes: a 64MB frame in 256B writes spans ~262k chunks, and any cost
+		// proportional to the pending queue per consumed chunk (shifting or
+		// splicing one entry off the front at a time) is quadratic in that
+		// count. The budget keeps generous margin for slow runners on the
+		// linear path; the quadratic path needs several seconds even locally.
+		const frame = encodePrivateFrame({ type: "event", requestId: "tiny-chunks" }, Buffer.alloc(64 * 1024 * 1024, 7));
+		const decoder = new PrivateFrameDecoder(isTestHeader);
+
+		const started = performance.now();
+		const decoded: PrivateFrame<TestHeader>[] = [];
+		for (let offset = 0; offset < frame.length; offset += 256) {
+			decoded.push(...decoder.push(frame.subarray(offset, Math.min(offset + 256, frame.length))));
+		}
+		const elapsed = performance.now() - started;
+
+		expect(decoded).toHaveLength(1);
+		expect(decoded[0]?.header).toEqual({ type: "event", requestId: "tiny-chunks" });
+		expect(decoded[0]?.payload.length).toBe(64 * 1024 * 1024);
+		expect(elapsed).toBeLessThan(2500);
+		decoder.finish();
+	});
+
 	it("sends frames through a duplex channel without interpreting payload bytes", async () => {
 		const stream = new PassThrough();
 		const channel = new PrivateFramedChannel(stream, isTestHeader);
