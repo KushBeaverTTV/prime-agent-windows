@@ -69,12 +69,17 @@ def test_scaleswe_filters_by_ids_without_eval() -> None:
 def test_scaleswe_score_travels_a_controller_channel() -> None:
     taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
     scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
-    # The scorer writes its result to a unique controller-generated file, and the
-    # reward reads that file; stdout parsing — spoofable by atexit handlers — is gone.
+    # The scorer runs pytest in a subprocess whose env is stripped of both result
+    # paths, so candidate code cannot discover or write the score or JUnit files.
     assert "SCALESWE_SCORE_PATH" in scorer
+    assert "SCALESWE_RESULTS_XML" in scorer
+    assert 'k not in ("SCALESWE_SCORE_PATH", "SCALESWE_RESULTS_XML")' in scorer
+    assert "subprocess.run" in scorer
     assert "SCALESWE_SCORE_PATH" in taskset
     assert "SCORE_RE" not in taskset
     assert "await runtime.read(score_path)" in taskset
+    # A missing or unreadable score file scores zero without raising.
+    assert "(OSError, ValueError, UnicodeDecodeError)" in taskset
 
 
 def test_scaleswe_paths_include_symlinks_and_absolute_tools() -> None:
@@ -176,10 +181,10 @@ def test_packages_target_the_platform_hook_signatures() -> None:
 def test_scaleswe_scorer_awards_only_through_the_fresh_report() -> None:
     scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
     assert "if code == 0:" not in scorer
-    assert "if code not in (0, 1):" in scorer
+    assert "result.returncode in (0, 1)" in scorer
     # The only award path parses the fresh JUnit report; skipped and xfailed
     # expected tests are never counted as passes by all_passed.
-    assert scorer.count("emit(1.0 if all_passed(xml_content, expected) else 0.0)") == 1
+    assert "if xml_content and all_passed(xml_content, expected):" in scorer
     assert 'if tc.find("skipped") is not None:' in scorer
 
 

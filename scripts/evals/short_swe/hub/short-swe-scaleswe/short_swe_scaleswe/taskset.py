@@ -241,7 +241,7 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
         # including atexit handlers — cannot spoof or reorder the trusted result.
         try:
             return float((await runtime.read(score_path)).decode().strip())
-        except (ValueError, UnicodeDecodeError):
+        except (OSError, ValueError, UnicodeDecodeError):
             return 0.0
 
     async def validate(self, runtime: vf.Runtime) -> bool:

@@ -1,29 +1,24 @@
 """Run the merged F2P+P2P pytest ids and emit 1.0 iff every expected id passed.
 
-Run inside the task's repo (cwd) by the testbed python (which has pytest + the project
-installed). argv[1] is the path to a JSON file of pytest node ids; the JUnit XML path
-arrives in ``SCALESWE_RESULTS_XML`` (a controller-generated unique path, so no stale or
-planted report can be parsed). The previous report is deleted before pytest runs and a
-pytest crash fail-closes to 0.0.
+The scorer is a trusted wrapper: it launches pytest in a subprocess whose environment
+does NOT carry `SCALESWE_SCORE_PATH` or `SCALESWE_RESULTS_XML`, so candidate test code
+cannot discover, write, or overwrite the controller-side result files. The wrapper
+reads the fresh JUnit report after the subprocess exits and writes the score to the
+controller-generated path; stdout parsing is never trusted.
 """
 
 import json
 import os
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-import pytest
-
-
-def emit(score: float) -> None:
-    # The sole trusted channel: the controller-generated unique file. Stdout is
-    # candidate-visible and can be spoofed by atexit handlers or test prints.
-    score_path = Path(os.environ["SCALESWE_SCORE_PATH"])
-    score_path.write_text(f"{score}\n")
-    print(f"<score>{score}</score>")
-    sys.stdout.flush()
+SCORE_PATH = os.environ["SCALESWE_SCORE_PATH"]
+XML_PATH = Path(os.environ["SCALESWE_RESULTS_XML"])
+EXPECTED_PATH = Path(sys.argv[1])
+ROOTDIR = Path.cwd()
 
 
 def normalize(value: str) -> str:
@@ -68,24 +63,43 @@ def all_passed(xml_content: str, expected: list[str]) -> bool:
 
 
 def main() -> None:
-    expected = json.load(open(sys.argv[1]))
+    expected = json.loads(EXPECTED_PATH.read_text())
     if not expected:
-        emit(0.0)
+        Path(SCORE_PATH).write_text("0.0\n")
         return
-    xml_path = Path(os.environ["SCALESWE_RESULTS_XML"])
-    xml_path.unlink(missing_ok=True)
-    code = pytest.main(["-vv", f"--junitxml={xml_path}", "-o", "addopts=", "--rootdir=.", *expected])
-    # Skipped, xfailed, or never-run expected tests exit 0 but are not passes; only the
-    # fresh JUnit report itself can award 1.0.
-    if code not in (0, 1):
-        emit(0.0)
-        return
-    try:
-        xml_content = xml_path.read_text()
-    except OSError:
-        emit(0.0)
-        return
-    emit(1.0 if all_passed(xml_content, expected) else 0.0)
+    XML_PATH.unlink(missing_ok=True)
+    # The subprocess that imports candidate code must not see the result paths.
+    child_env = {
+        k: v for k, v in os.environ.items() if k not in ("SCALESWE_SCORE_PATH", "SCALESWE_RESULTS_XML")
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-vv",
+            f"--junitxml={XML_PATH}",
+            "-o",
+            "addopts=",
+            "--rootdir=.",
+            *expected,
+        ],
+        env=child_env,
+        cwd=ROOTDIR,
+        capture_output=True,
+        timeout=3000,
+    )
+    # Only the fresh JUnit report can award a pass; skipped and xfailed entries
+    # are never counted, and pytest crash codes outside 0/1 fail closed.
+    score = 0.0
+    if result.returncode in (0, 1):
+        try:
+            xml_content = XML_PATH.read_text()
+        except OSError:
+            xml_content = ""
+        if xml_content and all_passed(xml_content, expected):
+            score = 1.0
+    Path(SCORE_PATH).write_text(f"{score}\n")
 
 
 if __name__ == "__main__":
