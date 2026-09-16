@@ -247,6 +247,31 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
 
+/** Completion budget for the branch summary wire call. */
+export const BRANCH_SUMMARY_MAX_TOKENS = 2048;
+
+/**
+ * Build the summarizer prompt for a serialized branch: the conversation in its
+ * `<conversation>` wrapper plus the selected instructions. Shared with
+ * `estimateBranchSummaryRequestTokens` so the estimate cannot drift from the
+ * request `generateBranchSummary` issues.
+ */
+function buildBranchSummaryPrompt(
+	conversationText: string,
+	customInstructions?: string,
+	replaceInstructions?: boolean,
+): string {
+	let instructions: string;
+	if (replaceInstructions && customInstructions) {
+		instructions = customInstructions;
+	} else if (customInstructions) {
+		instructions = `${BRANCH_SUMMARY_PROMPT}\n\nAdditional focus: ${customInstructions}`;
+	} else {
+		instructions = BRANCH_SUMMARY_PROMPT;
+	}
+	return `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
+}
+
 /**
  * Generate a summary of abandoned branch entries.
  *
@@ -278,17 +303,8 @@ export async function generateBranchSummary(
 		return { summary: "No content to summarize" };
 	}
 	// Serialize before the LLM call so it summarizes rather than continues this branch.
-	const llmMessages = convertToLlm(messages);
-	const conversationText = serializeConversation(llmMessages);
-	let instructions: string;
-	if (replaceInstructions && customInstructions) {
-		instructions = customInstructions;
-	} else if (customInstructions) {
-		instructions = `${BRANCH_SUMMARY_PROMPT}\n\nAdditional focus: ${customInstructions}`;
-	} else {
-		instructions = BRANCH_SUMMARY_PROMPT;
-	}
-	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
+	const conversationText = serializeConversation(convertToLlm(messages));
+	const promptText = buildBranchSummaryPrompt(conversationText, customInstructions, replaceInstructions);
 
 	const summarizationMessages = [
 		{
@@ -302,7 +318,7 @@ export async function generateBranchSummary(
 			completeSimple(
 				model,
 				{ systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-				{ apiKey, headers, sessionId, signal, maxTokens: 2048 },
+				{ apiKey, headers, sessionId, signal, maxTokens: BRANCH_SUMMARY_MAX_TOKENS },
 			),
 		{ policy: retry, signal },
 	);
@@ -327,4 +343,47 @@ export async function generateBranchSummary(
 		modifiedFiles,
 		usage: response.usage,
 	};
+}
+
+export interface EstimateBranchSummaryRequestTokensOptions {
+	/** Context window of the model that would run the summary (default 128000) */
+	contextWindow?: number;
+	/** Tokens reserved for prompt + LLM response (default 16384) */
+	reserveTokens?: number;
+	/** Optional custom instructions for summarization */
+	customInstructions?: string;
+	/** If true, customInstructions replaces the default prompt instead of being appended */
+	replaceInstructions?: boolean;
+}
+
+/**
+ * Estimate the context window the branch summary needs for the wire request
+ * `generateBranchSummary` builds, using the chars/4 heuristic this module
+ * already uses for pre-LLM token math. Mirrors the exact request body:
+ * SUMMARIZATION_SYSTEM_PROMPT, the serialized branch inside its
+ * `<conversation>` wrapper, and the completion budget. A model whose window is
+ * smaller than this cannot run the summary without failing over-limit or
+ * dropping branch context, so routing must fall back to the session model.
+ * 0 means the branch leaves nothing model-visible and no request is issued.
+ */
+export function estimateBranchSummaryRequestTokens(
+	entries: SessionEntry[],
+	options: EstimateBranchSummaryRequestTokensOptions = {},
+): number {
+	const { contextWindow, reserveTokens = 16384, customInstructions, replaceInstructions } = options;
+	// Mirrors generateBranchSummary: the same budget decides which entries fit.
+	const tokenBudget = (contextWindow || 128000) - reserveTokens;
+	const { messages } = prepareBranchEntries(entries, tokenBudget);
+	// generateBranchSummary answers "No content to summarize" without a wire call.
+	if (messages.length === 0) {
+		return 0;
+	}
+	const promptText = buildBranchSummaryPrompt(
+		serializeConversation(convertToLlm(messages)),
+		customInstructions,
+		replaceInstructions,
+	);
+	return (
+		Math.ceil(SUMMARIZATION_SYSTEM_PROMPT.length / 4) + Math.ceil(promptText.length / 4) + BRANCH_SUMMARY_MAX_TOKENS
+	);
 }
