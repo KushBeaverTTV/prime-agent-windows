@@ -176,7 +176,8 @@ describe("kernel bootstrap", () => {
 
 		const log = readFileSync(logPath, "utf8");
 		expect(log).toContain("python install 3.11");
-		expect(log).toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).toContain(`venv ${venv} --python 3.11`);
+		expect(log).not.toContain("--seed");
 		expect(log).toContain("pip install --python");
 		expect(log).not.toContain("ipykernel");
 		expect(log).toContain("prime-agent-runtime");
@@ -255,7 +256,7 @@ dependencies = ["httpx"]
 		await expect(ensureKernelPython({ pythonSkills: [pythonSkill] })).resolves.toBe(python);
 
 		const log = readFileSync(logPath, "utf8");
-		expect(log).not.toContain(`venv ${venv} --python 3.11 --seed`);
+		expect(log).not.toContain(`venv ${venv} --python 3.11`);
 		expect(log).toContain(`--editable ${pythonSkill.packagePath}`);
 		const version = JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8"));
 		expect(version.pythonSkills[0].pyprojectHash).toBe(pyprojectHash(pythonSkill.pyprojectPath));
@@ -399,7 +400,7 @@ dependencies = ["httpx"]
 
 		// A warm venv that needs no work never runs uv, so the log may not exist at all.
 		const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
-		expect(log.includes(`venv ${venv} --python 3.11 --seed`)).toBe(rebuilds);
+		expect(log.includes(`venv ${venv} --python 3.11`)).toBe(rebuilds);
 		if (rebuilds) {
 			expect(JSON.parse(readFileSync(join(venv, ".bootstrap-version"), "utf8")).runtime).toBe(runtimeIdentity);
 		}
