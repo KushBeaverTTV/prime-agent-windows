@@ -1225,6 +1225,10 @@ describe("daemon worker supervisor monitoring", () => {
 	});
 
 	it("keeps the supervisor monitor armed after a replacement binds but exits before claiming", async () => {
+		// Capture the real wall clock before fake timers replace Date: the
+		// availability-check chain gates each probe on real filesystem locks
+		// (the shutdown-admission registry guard) that fake timers cannot advance.
+		const realDateNow = Date.now;
 		vi.useFakeTimers();
 		// The supervisor socket is dead, comes up with the replacement launch,
 		// then dies again before the replacement ever claims the worker.
@@ -1236,12 +1240,24 @@ describe("daemon worker supervisor monitoring", () => {
 			return result ?? false;
 		});
 		// Drive the fake clock until the expected number of probes have run;
-		// one advance alone does not flush the availability check chain.
+		// one advance alone does not flush the availability check chain. The
+		// probes only run after the real filesystem locks resolve, so on loaded
+		// runners they can trail the fake clock by an arbitrary amount of real
+		// time: keep stepping until they land, bounded by both step count and
+		// wall clock, and report the observed state instead of a bare count.
 		const advanceUntilProbes = async (expected: number) => {
-			for (let step = 0; probeCount < expected && step < 200; step++) {
+			const wallStartMs = realDateNow();
+			let steps = 0;
+			while (probeCount < expected && steps < 100_000 && realDateNow() - wallStartMs < 10_000) {
+				steps += 1;
 				await vi.advanceTimersByTimeAsync(100);
 			}
-			expect(probeCount).toBe(expected);
+			expect(
+				probeCount,
+				`only ${probeCount}/${expected} supervisor probes ran after ${steps} clock advances ` +
+					`(${realDateNow() - wallStartMs}ms wall time), absentSince=${daemon.supervisorAbsentSince}, ` +
+					`monitor timer is ${daemon.supervisorMonitorTimer === undefined ? "cleared" : "armed"}`,
+			).toBe(expected);
 		};
 
 		daemon.scheduleSupervisorAvailabilityCheck("/tmp/supervisor.sock", 1500);
