@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
 from scripts.evals.short_swe import (  # noqa: E402
+    builder,
     ci,
     cleanup,
     evaluate,
@@ -519,6 +521,61 @@ def test_cleanup_rechecks_labels_paginates_and_attempts_every_delete() -> None:
     with pytest.raises(RuntimeError, match="1 sandbox"):
         cleanup.cleanup_owned(client, labels)
     assert client.deleted == ["owned-1", "owned-2"]
+
+
+def test_artifact_snapshot_hashes_one_open_regular_file(tmp_path: Path) -> None:
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    original = b"trusted snapshot bytes"
+    (source / "artifact.tgz").write_bytes(original)
+    source_fd, destination_fd = open_directories(source, destination)
+    try:
+        record = builder.snapshot_artifact(source_fd, destination_fd, "artifact.tgz")
+    finally:
+        os.close(source_fd)
+        os.close(destination_fd)
+    (source / "artifact.tgz").write_bytes(b"replacement")
+    assert (destination / "artifact.tgz").read_bytes() == original
+    assert record == {
+        "name": "artifact.tgz",
+        "size": len(original),
+        "sha256": hashlib.sha256(original).hexdigest(),
+    }
+
+
+def test_artifact_snapshot_rejects_symlink_fifo_and_oversize(tmp_path: Path) -> None:
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    (source / "regular").write_bytes(b"data")
+    (source / "symlink.tgz").symlink_to("regular")
+    os.mkfifo(source / "fifo.tgz")
+    with (source / "large.tgz").open("wb") as stream:
+        stream.truncate(builder.MAX_ARTIFACT_BYTES + 1)
+    source_fd, destination_fd = open_directories(source, destination)
+    try:
+        for name in ("symlink.tgz", "fifo.tgz", "large.tgz"):
+            with pytest.raises(ValueError):
+                builder.snapshot_artifact(source_fd, destination_fd, name)
+    finally:
+        os.close(source_fd)
+        os.close(destination_fd)
+    assert list(destination.iterdir()) == []
+
+
+def test_artifact_directory_rejects_intermediate_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, outside = tmp_path / "source", tmp_path / "outside"
+    source.mkdir()
+    outside.mkdir()
+    (outside / "artifacts").mkdir()
+    (source / "linked").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(builder, "SOURCE", source)
+    monkeypatch.setattr(builder, "ARTIFACT_RELATIVE", Path("linked/artifacts"))
+    with pytest.raises(OSError):
+        builder.open_candidate_artifacts()
 
 
 def test_compare_gates_positive_totals_over_a_zero_base() -> None:

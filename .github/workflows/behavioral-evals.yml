@@ -110,10 +110,11 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' && github.event.action == 'labeled' &&
       github.event.label.name == 'pre-release'
-    name: Hosted evaluation
+    name: runner
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     permissions:
+      actions: read
       contents: read
       statuses: write
     steps:
@@ -187,41 +188,28 @@ jobs:
             -e vendor/environments/environments/swe/swebench_pro \
             -e vendor/environments/environments/swe/scaleswe
 
-      - name: Build the head candidate tarballs
+      - name: Build exact base and head in isolated sandboxes
         id: build
         continue-on-error: true
         if: steps.evaluator.outcome == 'success'
         run: |
-          mkdir -p artifacts/head
-          git clone --quiet --depth 1 "https://github.com/${{ steps.resolve.outputs.head_repository }}.git" head-source
-          cd head-source
-          git fetch --depth 1 origin "${{ steps.resolve.outputs.head_sha }}"
-          git checkout --detach "${{ steps.resolve.outputs.head_sha }}"
-          npm ci --no-audit --no-fund
-          for package in tui ai agent coding-agent; do
-            (cd "packages/$package" && node_modules/.bin/tsgo -p tsconfig.build.json)
-          done
-          for package in tui ai agent coding-agent; do
-            (cd "packages/$package" && npm pack --pack-destination "../../artifacts/head" --silent)
-          done
-          cd ..
-          rm -rf head-source
-          python3 - <<'PY'
-          import hashlib, json
-          from pathlib import Path
-          artifacts_dir = Path("artifacts/head")
-          files = sorted(artifacts_dir.glob("*.tgz"))
-          if not files:
-              raise SystemExit("no candidate tarballs were produced")
-          manifest = {
-              "sha": "${{ steps.resolve.outputs.head_sha }}",
-              "artifacts": [
-                  {"name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-                  for path in files
-              ],
-          }
-          (artifacts_dir / "artifact-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-          PY
+          runner=(uv run --locked --project scripts/benchmarks python scripts/evals/short_swe/build_controller.py)
+          "${runner[@]}" --repository "$GITHUB_REPOSITORY" --source-repository "$GITHUB_REPOSITORY" \
+            --sha "${{ steps.resolve.outputs.base_sha }}" --side base \
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --output artifacts/base &
+          base_pid=$!
+          "${runner[@]}" --repository "$GITHUB_REPOSITORY" \
+            --source-repository "${{ steps.resolve.outputs.head_repository }}" \
+            --sha "${{ steps.resolve.outputs.head_sha }}" --side head \
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --output artifacts/head &
+          head_pid=$!
+          status=0
+          wait "$base_pid" || status=1
+          wait "$head_pid" || status=1
+          exit "$status"
+        env:
+          PRIME_SANDBOX_API_KEY: ${{ secrets.PRIME_SANDBOX_API_KEY }}
+          PRIME_TEAM_ID: ${{ vars.PRIME_BENCHMARK_TEAM_ID }}
 
       - name: Generate the fixed 15/8/5 configs
         id: prepare
@@ -248,6 +236,17 @@ jobs:
           PRIME_SANDBOX_API_KEY: ${{ secrets.PRIME_SANDBOX_API_KEY }}
           PRIME_TEAM_ID: ${{ vars.PRIME_BENCHMARK_TEAM_ID }}
 
+      - name: Publish the base candidate tarballs
+        id: upload-base
+        continue-on-error: true
+        if: steps.oracle.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: candidate-tarballs-base
+          path: artifacts/base/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Publish the head candidate tarballs
         id: upload-head
         continue-on-error: true
@@ -269,20 +268,24 @@ jobs:
           import os
           from pathlib import Path
 
-          manifest = json.loads(Path("artifacts/head/artifact-manifest.json").read_text())
-          request = json.loads(Path("request/request.json").read_text())
-          if manifest["sha"] != request["head_sha"]:
-              raise ValueError("head artifact manifest does not match the request")
-          sources = {
-              "head": {
+          def side(name: str, sha: str, artifact_id: str) -> dict:
+              manifest = json.loads(Path(f"artifacts/{name}/artifact-manifest.json").read_text())
+              if manifest["sha"] != sha:
+                  raise ValueError(f"{name}: artifact manifest does not match the request")
+              return {
                   "tarballs_url": (
                       f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}"
-                      f"/actions/artifacts/${{ steps.upload-head.outputs.artifact-id }}/zip"
+                      f"/actions/artifacts/{artifact_id}/zip"
                   ),
-                  "commit": request["head_sha"],
+                  "commit": sha,
                   "checksums": {row["name"]: row["sha256"] for row in manifest["artifacts"]},
                   "token": os.environ["GH_TOKEN"],
               }
+
+          request = json.loads(Path("request/request.json").read_text())
+          sources = {
+              "base": side("base", request["base_sha"], "${{ steps.upload-base.outputs.artifact-id }}"),
+              "head": side("head", request["head_sha"], "${{ steps.upload-head.outputs.artifact-id }}"),
           }
           Path("request/sources.json").write_text(json.dumps(sources))
           PY
@@ -295,7 +298,7 @@ jobs:
         if: steps.sources.outcome == 'success'
         run: uv tool install prime==0.6.31
 
-      - name: Launch the three hosted head evaluations
+      - name: Launch the six hosted evaluations
         id: hosted
         continue-on-error: true
         if: steps.prime-cli.outcome == 'success'
@@ -327,7 +330,7 @@ jobs:
         env:
           PRIME_API_KEY: ${{ secrets.PRIME_BEHAVIORAL_API_KEY }}
 
-      - name: Gate the head result against cached base stats
+      - name: Gate the paired hosted result
         id: evaluate
         continue-on-error: true
         if: steps.hosted-collect.outcome == 'success'
@@ -335,8 +338,7 @@ jobs:
           vendor/verifiers/.venv/bin/python scripts/evals/short_swe/evaluate.py \
             --eval vendor/verifiers/.venv/bin/eval --configs generated-configs \
             --output hosted/raw-eval --request request/request.json \
-            --result results/paired.json --from-existing \
-            --base-stats scripts/evals/short_swe/base-stats.json
+            --result results/paired.json --from-existing
 
       - name: Clean up evaluation sandboxes
         if: always() && steps.evaluator.outcome == 'success'
@@ -428,6 +430,9 @@ jobs:
               target_url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             });
 
+      - name: Enforce complete paired result and regression thresholds
+        if: always()
+        run: test -f results/verdict && test "$(cat results/verdict)" = pass
 
   report:
     name: Publish PR report
@@ -442,7 +447,7 @@ jobs:
         uses: actions/download-artifact@642e1d0bd1d03f3d1c2f94b1f3ae300c4d0b1b4a # v7
         with:
           name: behavioral-results-${{ github.run_attempt }}
-          path: results
+          path: .
 
       - name: Publish PR report
         if: always() && hashFiles('results/report.md') != ''
@@ -476,6 +481,3 @@ jobs:
               });
             }
 
-      - name: Enforce complete paired result and regression thresholds
-        if: always()
-        run: test -f results/verdict && test "$(cat results/verdict)" = pass
