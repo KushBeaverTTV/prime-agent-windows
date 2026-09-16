@@ -52,7 +52,7 @@ Reapply the label to approve the new exact comparison.
   evidence.
 - Typed Verifiers `WireTrace` episodes provide rewards, usage, timing, and task
   identity. Missing or malformed episodes fail. Exact rollout deadlines and deterministic
-  provider rejections remain unresolved model outcomes; transient provider failures fail.
+  provider rejections remain unresolved model outcomes; terminal 5xx provider outages count as unresolved model outcomes bounded by the model-failure threshold.
 - SWE-bench Verified transfers only a bounded binary source diff into a fresh, credential-free,
   network-free verifier sandbox. The trusted evaluator parses bounded controller-captured test
   output against pinned task metadata. The solver never receives the task package metadata; gold

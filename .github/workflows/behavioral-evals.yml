@@ -371,6 +371,7 @@ jobs:
             oracle-eval
             hosted
             request
+            !request/sources.json
             results
           if-no-files-found: warn
           retention-days: 30

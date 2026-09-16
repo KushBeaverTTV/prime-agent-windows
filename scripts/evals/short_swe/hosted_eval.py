@@ -27,9 +27,9 @@ HOSTED_EVALUATION_TIMEOUT_MINUTES = 300
 finish (and its episodes collect) inside that budget or the check fails closed."""
 
 HOSTED_ENVIRONMENTS = {
-    "swebench-verified": "primeintellect/short-swe-verified",
-    "swebench-pro": "primeintellect/short-swe-pro",
-    "scaleswe": "primeintellect/short-swe-scaleswe",
+    "swebench-verified": "primeintellect/short-swe-verified@0.1.13",
+    "swebench-pro": "primeintellect/short-swe-pro@0.1.13",
+    "scaleswe": "primeintellect/short-swe-scaleswe@0.1.14",
 }
 EVAL_ID_RE = re.compile(r"Evaluation ID: (\S+)")
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}
