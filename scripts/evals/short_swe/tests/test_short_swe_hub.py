@@ -71,6 +71,7 @@ def test_scaleswe_paths_include_symlinks_and_absolute_tools() -> None:
     assert "/usr/bin/find" in taskset
     assert "\( -type f -o -type l \)" in taskset
     assert "/bin/rm" in taskset
+    assert '"/bin/sh", "-c", self.TEST_PATHS' in taskset
 
 
 def test_scaleswe_env_is_a_pinned_single_agent_env() -> None:

@@ -161,13 +161,15 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
     )
 
     async def _test_paths(self, runtime: vf.Runtime) -> list[str]:
-        result = await runtime.run(["sh", "-c", self.TEST_PATHS], ENV)
+        # Absolute shell with no PATH: a planted `sh`, `find`, or `sed` on the
+        # testbed PATH cannot intercept the enumeration the restore verifies against.
+        result = await runtime.run(["/bin/sh", "-c", self.TEST_PATHS], {})
         if result.exit_code != 0:
             raise RuntimeError(f"scaleswe test enumeration failed ({self.data.name})")
         return sorted({line for line in result.stdout.splitlines() if line})
 
     async def setup(self, runtime: vf.Runtime) -> None:
-        result = await runtime.run(["sh", "-c", self.data.pre_commands], ENV)
+        result = await runtime.run(["/bin/sh", "-c", self.data.pre_commands], ENV)
         if result.exit_code != 0:
             raise RuntimeError(f"scaleswe setup failed ({self.data.name}): {result.stderr.strip()[-500:]}")
         # Snapshot every test-bearing file — tracked or not, gitignored included —
@@ -193,7 +195,7 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
             print(f"scaleswe pristine test snapshot missing ({self.data.name})")
             return 0.0
         restored = await runtime.run(
-            ["sh", "-c", RESTORE],
+            ["/bin/sh", "-c", RESTORE],
             {**ENV, "GIT_NO_REPLACE_OBJECTS": "1", "base": self.data.base_commit},
         )
         if restored.exit_code:
