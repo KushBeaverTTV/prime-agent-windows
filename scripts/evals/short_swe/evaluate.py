@@ -38,6 +38,8 @@ def recognized_model_failure(trace) -> bool:
             and error.message == terminal.message
             for error in call_errors
         )
+    if terminal.type == "ProviderError" and terminal.status_code in {500, 502, 503, 504}:
+        return True
     return (
         not call_errors
         and terminal.type == "HarnessError"
