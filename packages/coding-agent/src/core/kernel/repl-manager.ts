@@ -3,6 +3,7 @@
 // a diagnostics tail. The protocol is documented in prime-agent-runtime/src/rlm/repl.md.
 import type { ChildProcess } from "node:child_process";
 import {
+	chmodSync,
 	closeSync,
 	existsSync,
 	fchmodSync,
@@ -265,6 +266,9 @@ export class ReplKernelManager {
 			let size = existsSync(path) ? statSync(path).size : 0;
 			if (size > MAX_KERNEL_STDERR_LOG_BYTES) {
 				try {
+					// Tighten before the move: a renamed log keeps its mode, and the
+					// rotated file holds the exception payloads worth protecting.
+					chmodSync(path, KERNEL_STDERR_LOG_MODE);
 					// Drop any prior .old first: rename fails on Windows if it exists.
 					rmSync(`${path}.old`, { force: true });
 					renameSync(path, `${path}.old`);
