@@ -266,7 +266,7 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 
 This prevents the model from treating it as a conversation to continue.
 
-Each tool call carries a sequential `#N` prefix and its result repeats the matching index, so repeated calls of the same tool in one turn pair unambiguously. Results whose call was not serialized (possible in branch-summary budget slices) fall back to the name-only label.
+Each tool call carries a sequential `#N` prefix and its result repeats the matching index, so repeated calls of the same tool in one turn pair unambiguously. Branch summaries drop tool-result entries before serialization (their context remains attached to the assistant tool call), so they show the `#N` call prefixes without any result lines. When the serialized input lacks the matching call — possible for extension callers passing partial message lists, since `serializeConversation` is exported — the result falls back to the name-only label.
 
 Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results, especially from `ipython` and optional `bash`, are typically the largest contributors to context size.
 

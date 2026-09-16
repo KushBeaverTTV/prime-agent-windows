@@ -204,9 +204,9 @@ export function serializeConversation(messages: Message[]): string {
 				// paired call so the summarizer can match each result to
 				// its `#N`-prefixed entry in the [Assistant tool calls]
 				// lines even when the same tool is called repeatedly in
-				// one turn. Results whose call was not serialized (e.g.
-				// branch-summary budget slices drop older entries) fall
-				// back to the name-only label.
+				// one turn. Results whose call is not part of the input
+				// (extension callers may pass partial message lists)
+				// fall back to the name-only label.
 				const callIndex = toolCallIndices.get(msg.toolCallId);
 				const indexSuffix = callIndex === undefined ? "" : ` #${callIndex}`;
 				const label = msg.isError
