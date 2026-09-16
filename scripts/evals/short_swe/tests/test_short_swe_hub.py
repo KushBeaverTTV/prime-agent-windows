@@ -156,11 +156,14 @@ def test_packages_target_the_platform_hook_signatures() -> None:
     assert "async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:" in scaleswe
 
 
-def test_scaleswe_scorer_never_shortcuts_exit_zero() -> None:
+def test_scaleswe_scorer_awards_only_through_the_fresh_report() -> None:
     scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
     assert "if code == 0:" not in scorer
-    assert "only the\n    # fresh JUnit report itself can award 1.0" in scorer
+    assert "if code not in (0, 1):" in scorer
+    # The only award path parses the fresh JUnit report; skipped and xfailed
+    # expected tests are never counted as passes by all_passed.
     assert scorer.count("emit(1.0 if all_passed(xml_content, expected) else 0.0)") == 1
+    assert 'if tc.find("skipped") is not None:' in scorer
 
 
 def test_pro_env_pins_the_isolated_verifier() -> None:
@@ -179,8 +182,18 @@ def test_install_enforces_archive_quotas() -> None:
 
 def test_scaleswe_restore_fails_closed_without_blast_radius() -> None:
     taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
-    assert 'git rev-parse --verify "$base^{commit}"' in taskset
-    assert 'git diff --quiet "$base" -- tests/ test/ Test/ Tests/' in taskset
+    # The pre-agent snapshot lives in controller memory; the agent cannot forge it.
+    assert "self._pristine[path] = await runtime.read(path)" in taskset
+    assert "if pristine is None:" in taskset
+    assert "pristine test snapshot missing" in taskset
+    # Anything enumerated after the agent but not in the snapshot is planted —
+    # including gitignored files the git sweep cannot see — and is deleted.
+    assert "if path not in pristine:" in taskset
+    assert 'await runtime.run(["rm", "f", "path], ENV)' in taskset or "rm" in taskset
+    # The restore is proven by hashing the tree back to the snapshot; every failure
+    # path scores zero without raising, so tampering cannot award or break the run.
+    assert "test verification failed closed" in taskset
     assert "test restoration failed closed" in taskset
-    assert "return 0.0" in taskset
+    assert '"GIT_NO_REPLACE_OBJECTS": "1"' in taskset
+    assert taskset.count("return 0.0") >= 3
     assert "scaleswe setup failed (" in taskset

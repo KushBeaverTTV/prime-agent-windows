@@ -9,6 +9,7 @@ source), applies the f2p test, then runs the merged F2P+P2P ids through `score.p
 which scores 1.0 iff every expected id passed.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -84,21 +85,8 @@ git ls-tree -r --name-only "$base" 2>/dev/null | while IFS= read -r path; do
       git checkout "$base" -- "$path" 2>/dev/null || true ;;
   esac
 done
-git ls-files --cached --others --exclude-standard 2>/dev/null | while IFS= read -r path; do
-  case "$path" in
-    tests/*|test/*|Test/*|Tests/*|test_*.py|*/test_*.py|*_test.py|*/*_test.py|conftest.py|*/conftest.py)
-      if ! git cat-file -e "$base:$path" 2>/dev/null; then
-        rm -f -- "$path"; git rm -q --cached -- "$path" 2>/dev/null || true
-      fi ;;
-  esac
-done
-# The tests must now be byte-identical to the trusted base; a corrupted repository or a
-# masked checkout failure fails closed instead of running agent-modified tests.
-git diff --quiet "$base" -- tests/ test/ Test/ Tests/ 2>/dev/null || {
-    git status --porcelain -- tests/ test/ Test/ Tests/ 2>/dev/null | head -5
-    exit 1
-}
 """
+
 
 PATCH = "/tmp/scaleswe_f2p.patch"
 SCORER_SRC = (Path(__file__).parent / "score.py").read_bytes()
@@ -191,10 +179,29 @@ class ShortSWEScalesweData(vf.TaskData):
 class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
     NEEDS_CONTAINER = True
 
+    TEST_PATHS = (
+        "find . -not -path './.git/*' -type f "
+        r"\( -name 'test_*.py' -o -name '*_test.py' -o -name 'conftest.py' "
+        r"-o -path '*/tests/*' -o -path '*/test/*' -o -path '*/Test/*' -o -path '*/Tests/*' \) "
+        r"| sed 's|^\./||'"
+    )
+
+    async def _test_paths(self, runtime: vf.Runtime) -> list[str]:
+        result = await runtime.run(["sh", "-c", self.TEST_PATHS], ENV)
+        if result.exit_code != 0:
+            raise RuntimeError(f"scaleswe test enumeration failed ({self.data.name})")
+        return sorted({line for line in result.stdout.splitlines() if line})
+
     async def setup(self, runtime: vf.Runtime) -> None:
         result = await runtime.run(["sh", "-c", self.data.pre_commands], ENV)
         if result.exit_code != 0:
             raise RuntimeError(f"scaleswe setup failed ({self.data.name}): {result.stderr.strip()[-500:]}")
+        # Snapshot every test-bearing file — tracked or not, gitignored included —
+        # in controller memory before the agent runs. Only the trusted controller ever
+        # holds this state, so no in-sandbox tampering can forge a pristine restore.
+        self._pristine = {}
+        for path in await self._test_paths(runtime):
+            self._pristine[path] = await runtime.read(path)
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         # Before scoring restores test files, so agent edits to tests are included as-is.
@@ -205,14 +212,41 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
         test_ids = self.data.fail_to_pass + self.data.pass_to_pass
         if not test_ids:
             return 0.0
-        restored = await runtime.run(["sh", "-c", RESTORE], {**ENV, "base": self.data.base_commit})
+        pristine = getattr(self, "_pristine", None)
+        if pristine is None:
+            # Without a pre-agent snapshot there is nothing trustworthy to score
+            # against: the task can never be resolved from here.
+            print(f"scaleswe pristine test snapshot missing ({self.data.name})")
+            return 0.0
+        restored = await runtime.run(
+            ["sh", "-c", RESTORE],
+            {**ENV, "GIT_NO_REPLACE_OBJECTS": "1", "base": self.data.base_commit},
+        )
         if restored.exit_code:
-            # The tests could not be proven identical to the trusted base (a corrupted
-            # repository or a masked restore). The task can never be resolved from here,
-            # but the paired run keeps its blast radius: score zero, never raise.
+            # The trusted base is unreachable (a corrupted repository); the task can
+            # never be resolved from here, but the paired run keeps its blast radius.
             detail = (restored.stderr or restored.stdout or "").strip()[-500:]
             print(f"scaleswe test restoration failed closed ({self.data.name}): {detail}")
             return 0.0
+        # Controller-authoritative restore: delete anything the agent planted (the
+        # snapshot pre-dates the agent, so anything not in it is planted — including
+        # gitignored files the git sweep cannot see), then write the pristine bytes
+        # back from controller memory.
+        current = await self._test_paths(runtime)
+        for path in current:
+            if path not in pristine:
+                await runtime.run(["rm", "-f", "--", path], ENV)
+        for path, data in pristine.items():
+            await runtime.write(path, data)
+        # Proof: the enumerated test tree must hash back to the snapshot exactly.
+        verified = await self._test_paths(runtime)
+        if set(verified) != set(pristine):
+            print(f"scaleswe test verification failed closed ({self.data.name}): paths differ")
+            return 0.0
+        for path in verified:
+            if hashlib.sha256(await runtime.read(path)).digest() != hashlib.sha256(pristine[path]).digest():
+                print(f"scaleswe test verification failed closed ({self.data.name}): {path}")
+                return 0.0
         if self.data.f2p_patch.strip():
             await self._apply_patch(runtime, self.data.f2p_patch)
         if self.data.f2p_script:

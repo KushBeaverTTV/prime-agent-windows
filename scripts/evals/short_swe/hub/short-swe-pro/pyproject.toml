@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "short-swe-pro"
-version = "0.1.6"
+version = "0.1.8"
 description = "the fixed 8-task SWE-bench Pro slice"
 requires-python = ">=3.12"
 dependencies = [
