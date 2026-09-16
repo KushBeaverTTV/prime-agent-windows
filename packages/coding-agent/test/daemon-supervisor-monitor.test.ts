@@ -1239,12 +1239,8 @@ describe("daemon worker supervisor monitoring", () => {
 			probeCount += 1;
 			return result ?? false;
 		});
-		// Drive the fake clock until the expected number of probes have run;
-		// one advance alone does not flush the availability check chain. The
-		// probes only run after the real filesystem locks resolve, so on loaded
-		// runners they can trail the fake clock by an arbitrary amount of real
-		// time: keep stepping until they land, bounded by both step count and
-		// wall clock, and report the observed state instead of a bare count.
+		// Drive the fake clock until the expected number of probes have run,
+		// bounded by step count and wall clock (see the Date note above).
 		const advanceUntilProbes = async (expected: number) => {
 			const wallStartMs = realDateNow();
 			let steps = 0;
