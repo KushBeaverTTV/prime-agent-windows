@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "short-swe-verified"
-version = "0.1.12"
+version = "0.1.13"
 description = "the fixed 15-task SWE-bench Verified slice graded in a fresh network-free verifier"
 requires-python = ">=3.12"
 dependencies = [

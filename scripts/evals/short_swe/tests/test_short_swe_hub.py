@@ -69,12 +69,14 @@ def test_scaleswe_filters_by_ids_without_eval() -> None:
 def test_scaleswe_score_travels_a_controller_channel() -> None:
     taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
     scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
-    # The scorer runs pytest in a subprocess whose env is stripped of both result
-    # paths, so candidate code cannot discover or write the score or JUnit files.
+    # The scorer runs pytest in-process with a plugin that records outcomes in
+    # the wrapper's own memory; no file path or env var leaks a writable result
+    # channel to candidate code.
+    assert "_ResultCollector" in scorer
+    assert "pytest.main" in scorer
+    assert "subprocess" not in scorer
+    assert "os._exit(0)" in scorer
     assert "SCALESWE_SCORE_PATH" in scorer
-    assert "SCALESWE_RESULTS_XML" in scorer
-    assert 'k not in ("SCALESWE_SCORE_PATH", "SCALESWE_RESULTS_XML")' in scorer
-    assert "subprocess.run" in scorer
     assert "SCALESWE_SCORE_PATH" in taskset
     assert "SCORE_RE" not in taskset
     assert "await runtime.read(score_path)" in taskset
@@ -105,8 +107,8 @@ def test_pro_tasks_do_not_use_the_swebench_parser() -> None:
 
 def test_scaleswe_scorer_fails_closed() -> None:
     scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
-    assert "unlink(missing_ok=True)" in scorer
-    assert "SCALESWE_RESULTS_XML" in scorer
+    assert "os._exit(0)" in scorer
+    assert "SCALESWE_SCORE_PATH" in scorer
     taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
     assert '"python", "-I"' in taskset
     assert "uuid4" in taskset
@@ -181,11 +183,9 @@ def test_packages_target_the_platform_hook_signatures() -> None:
 def test_scaleswe_scorer_awards_only_through_the_fresh_report() -> None:
     scorer = (module_dir("short-swe-scaleswe") / "score.py").read_text()
     assert "if code == 0:" not in scorer
-    assert "result.returncode in (0, 1)" in scorer
-    # The only award path parses the fresh JUnit report; skipped and xfailed
-    # expected tests are never counted as passes by all_passed.
-    assert "if xml_content and all_passed(xml_content, expected):" in scorer
-    assert 'if tc.find("skipped") is not None:' in scorer
+    assert "if code in (0, 1) and all_passed(collector.outcomes, expected):" in scorer
+    # Skipped tests record outcome "skipped" and can never be treated as passes.
+    assert '"skipped": ' in scorer or 'outcome = "skipped"' in scorer
 
 
 def test_pro_env_pins_the_isolated_verifier() -> None:

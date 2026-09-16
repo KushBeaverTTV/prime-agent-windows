@@ -229,13 +229,12 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
         token = uuid4().hex[:12]
         scorer = f"/tmp/scaleswe_scorer_{token}.py"
         test_ids_path = f"/tmp/scaleswe_test_ids_{token}.json"
-        results = f"/tmp/scaleswe_results_{token}.xml"
         score_path = f"/tmp/scaleswe_score_{token}.txt"
         await runtime.write(scorer, SCORER_SRC)
         await runtime.write(test_ids_path, json.dumps(test_ids).encode())
         await runtime.run(
             ["python", "-I", scorer, test_ids_path],
-            {**ENV, "SCALESWE_RESULTS_XML": results, "SCALESWE_SCORE_PATH": score_path},
+            {**ENV, "SCALESWE_SCORE_PATH": score_path},
         )
         # Read the score from the controller channel: candidate-controlled stdout —
         # including atexit handlers — cannot spoof or reorder the trusted result.
