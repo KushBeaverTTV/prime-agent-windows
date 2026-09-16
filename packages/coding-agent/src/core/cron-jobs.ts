@@ -213,7 +213,7 @@ export class AgentCronJobStore {
 			return [];
 		}
 		return withCronJobsStateLocks([path], () => {
-			const state = this.readState(path);
+			const state = roundTripJobsState(this.readState(path));
 			const recovered: AgentCronJob[] = [];
 			if (state.dispatches.length > 0) {
 				recoverInterruptedInState(state, now, recovered);
@@ -798,18 +798,21 @@ export class AgentCronJobStore {
 	 * Read the parsed state, serving the in-memory snapshot while the file's stat
 	 * identity is unchanged. Polls (agents view, scheduler) then cost one stat
 	 * instead of a full read+parse; a changed identity falls back to the disk.
+	 * The snapshot and every returned state are deeply frozen: callers get a
+	 * read-only view, so an in-place edit of a listed job can reach neither the
+	 * snapshot nor a later publish. Mutators clone before editing.
 	 */
 	private readState(path: string): CronJobsState {
 		const identity = statJobsFileIdentity(path);
 		if (!identity) {
 			this.stateSnapshots.delete(path);
-			return { jobs: [], dispatches: [] };
+			return EMPTY_JOBS_STATE;
 		}
 		const snapshot = this.stateSnapshots.get(path);
 		if (snapshot && isSameJobsFileIdentity(snapshot.identity, identity)) {
 			return snapshot.state;
 		}
-		const state = readJobsState(path);
+		const state = deepFreezeJobsState(readJobsState(path));
 		// A concurrent writer can replace the file during the read; cache only a parse bracketed by one file identity.
 		const after = statJobsFileIdentity(path);
 		if (after && isSameJobsFileIdentity(identity, after)) {
@@ -821,21 +824,25 @@ export class AgentCronJobStore {
 	}
 
 	/**
-	 * Persist a state and publish it as the snapshot for subsequent reads, so
-	 * mutations do not re-read what they just wrote. Runs under the state lock,
+	 * Persist a state and publish it as the frozen snapshot for subsequent reads,
+	 * so mutations do not re-read what they just wrote. Runs under the state lock,
 	 * where conforming writers cannot replace the file between write and stat.
+	 * The snapshot is published only when the post-write stat matches the identity
+	 * this write produced; an external replacement landing between write and stat
+	 * invalidates the snapshot instead of pairing its identity with stale state.
 	 */
 	private writeState(path: string, state: CronJobsState): void {
+		let written: CronJobsFileIdentity | undefined;
 		try {
-			writeJobsState(path, state);
+			written = writeJobsState(path, state);
 		} catch (error) {
-			// A mutator may have edited a cached state in place; an unpersisted state must not survive in the snapshot.
+			// An unpersisted state must not survive in the snapshot.
 			this.stateSnapshots.delete(path);
 			throw error;
 		}
 		const identity = statJobsFileIdentity(path);
-		if (identity) {
-			this.stateSnapshots.set(path, { identity, state: roundTripJobsState(state) });
+		if (identity && written && isSameJobsFileIdentity(written, identity)) {
+			this.stateSnapshots.set(path, { identity, state: deepFreezeJobsState(roundTripJobsState(state)) });
 		} else {
 			this.stateSnapshots.delete(path);
 		}
@@ -859,7 +866,9 @@ export class AgentCronJobStore {
 		const dispatches = withCronJobsStateLocks(paths, () => {
 			const dispatches: AgentCronDispatch[] = [];
 			for (const path of paths) {
-				const state = this.readState(path);
+				// Mutators work on a private clone, so a mid-edit throw or a cached read
+				// never leaks into the published snapshot; the frozen view stays intact.
+				const state = roundTripJobsState(this.readState(path));
 				const before = JSON.stringify(state);
 				dispatches.push(...mutator(state));
 				if (JSON.stringify(state) !== before) {
@@ -1619,6 +1628,27 @@ function roundTripJobsState(state: CronJobsState): CronJobsState {
 	return JSON.parse(JSON.stringify(state)) as CronJobsState;
 }
 
+/**
+ * Freeze a state graph (state, jobs, schedules, dispatches) in place so every
+ * read serves a read-only view: an in-place edit of a returned job throws
+ * instead of reaching the snapshot or a later publish.
+ */
+function deepFreezeJobsState(state: CronJobsState): CronJobsState {
+	for (const job of state.jobs) {
+		Object.freeze(job.schedule);
+		Object.freeze(job);
+	}
+	for (const dispatch of state.dispatches) {
+		Object.freeze(dispatch);
+	}
+	Object.freeze(state.jobs);
+	Object.freeze(state.dispatches);
+	return Object.freeze(state);
+}
+
+/** Served while a jobs file is missing; frozen like every other read view. */
+const EMPTY_JOBS_STATE = deepFreezeJobsState({ jobs: [], dispatches: [] });
+
 function readJobsState(path: string): CronJobsState {
 	if (!existsSync(path)) {
 		return { jobs: [], dispatches: [] };
@@ -1638,9 +1668,23 @@ function writeJobsFile(path: string, jobs: readonly AgentCronJob[], mergeCurrent
 	});
 }
 
-function writeJobsState(path: string, state: CronJobsState): void {
+/**
+ * Persist a state atomically and report the stat identity the written file
+ * carries after the rename (the temp file keeps dev/ino/size/mtime across it),
+ * so a caller can verify that a later stat still shows this write's file.
+ */
+function writeJobsState(path: string, state: CronJobsState): CronJobsFileIdentity | undefined {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	writeFileAtomicSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, fsync: true, fsyncDir: true });
+	let written: CronJobsFileIdentity | undefined;
+	writeFileAtomicSync(path, `${JSON.stringify(state, null, 2)}\n`, {
+		mode: 0o600,
+		fsync: true,
+		fsyncDir: true,
+		beforeRename: (tempPath) => {
+			written = statJobsFileIdentity(tempPath);
+		},
+	});
+	return written;
 }
 
 function claimDueInState(state: CronJobsState, dueAt: Date, claimedAt: Date): AgentCronDispatch[] {

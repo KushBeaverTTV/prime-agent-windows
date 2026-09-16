@@ -7,6 +7,7 @@ import { type AgentCronJob, AgentCronJobStore, SESSION_SCHEDULED_JOBS_FILENAME }
 
 const readCounts = vi.hoisted(() => new Map<string, number>());
 const renameFault = vi.hoisted(() => ({ remaining: 0, path: "" }));
+const renameAfterHook = vi.hoisted(() => ({ after: undefined as (() => void) | undefined }));
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof FsModule>();
 	return {
@@ -21,7 +22,10 @@ vi.mock("node:fs", async (importOriginal) => {
 				renameFault.remaining--;
 				throw Object.assign(new Error("rename blocked"), { code: "EPERM" });
 			}
-			return actual.renameSync(from, to);
+			actual.renameSync(from, to);
+			// Fires after an atomic rename lands, so a test can emulate an external
+			// writer replacing the file before the store stats it again.
+			renameAfterHook.after?.();
 		}) as typeof actual.renameSync,
 	};
 });
@@ -71,6 +75,7 @@ describe("AgentCronJobStore state snapshots", () => {
 		readCounts.clear();
 		renameFault.remaining = 0;
 		renameFault.path = "";
+		renameAfterHook.after = undefined;
 	});
 
 	it("serves repeated reads of an unchanged file from the in-memory snapshot", () => {
@@ -335,4 +340,147 @@ describe("AgentCronJobStore state snapshots", () => {
 		expect(jobsReads(firstPath)).toBe(1);
 		expect(jobsReads(secondPath)).toBe(0);
 	});
+
+	it("serves read-only views: an in-place edit of a listed job cannot change store behavior or reach disk", () => {
+		const storePath = join(makeTempDir(tempDirs), "cron-jobs.json");
+		const store = new AgentCronJobStore(storePath);
+		const job = store.create({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session-1.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "read-only view",
+			now: start,
+		});
+		readCounts.clear();
+
+		const listed = store.list();
+		const dueJob = store.getDueJob(job.id, new Date("2026-01-01T13:35:00.000Z"));
+		expect(listed).toHaveLength(1);
+		expect(dueJob).toBeDefined();
+		expect(Object.isFrozen(listed[0])).toBe(true);
+		expect(Object.isFrozen(dueJob)).toBe(true);
+
+		expect(() => setStatus(listed[0], "cancelled")).toThrow(TypeError);
+		expect(() => setStatus(dueJob, "cancelled")).toThrow(TypeError);
+
+		expect(store.list()[0]?.status).toBe("active");
+		expect(jobsReads(storePath)).toBe(0);
+
+		// An unrelated mutation must persist the true state, not a leaked in-place edit.
+		store.create({
+			activeSessionId: "active-2",
+			sessionId: "session-2",
+			sessionFile: "/tmp/session-2.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "unrelated mutation",
+			now: start,
+		});
+		const persisted = JSON.parse(readFileSync(storePath, "utf-8")) as { jobs: AgentCronJob[] };
+		expect(persisted.jobs.find((candidate) => candidate.id === job.id)?.status).toBe("active");
+		expect(store.list()).toHaveLength(2);
+	});
+
+	it("keeps the published snapshot intact when a mutator throws mid-edit", () => {
+		const storePath = join(makeTempDir(tempDirs), "cron-jobs.json");
+		const store = new AgentCronJobStore(storePath);
+		const job = store.create({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session-1.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "survives the mutator crash",
+			now: start,
+		});
+		readCounts.clear();
+
+		expect(() =>
+			(
+				store as unknown as { mutateStates: (mutator: (state: MutableJobsState) => unknown[]) => unknown[] }
+			).mutateStates((state) => {
+				state.jobs = state.jobs.map((candidate) => ({ ...candidate, status: "cancelled" as const }));
+				throw new Error("mutator crashed mid-edit");
+			}),
+		).toThrow("mutator crashed mid-edit");
+
+		// The unpersisted partial edit never reaches reads...
+		expect(store.list().map((candidate) => candidate.status)).toEqual(["active"]);
+		expect(jobsReads(storePath)).toBe(0);
+		// ...nor does a later unrelated mutation resurrect it.
+		store.create({
+			activeSessionId: "active-2",
+			sessionId: "session-2",
+			sessionFile: "/tmp/session-2.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "after the crash",
+			now: start,
+		});
+		const persisted = JSON.parse(readFileSync(storePath, "utf-8")) as { jobs: AgentCronJob[] };
+		expect(persisted.jobs.find((candidate) => candidate.id === job.id)?.status).toBe("active");
+		expect(store.list().map((candidate) => candidate.status)).toEqual(["active", "active"]);
+	});
+
+	it("re-reads instead of caching an external replacement that lands right after our own write", () => {
+		const storePath = join(makeTempDir(tempDirs), "cron-jobs.json");
+		const store = new AgentCronJobStore(storePath);
+		store.create({
+			activeSessionId: "active-1",
+			sessionId: "session-1",
+			sessionFile: "/tmp/session-1.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "our job",
+			now: start,
+		});
+		readCounts.clear();
+		// An external writer replaces the file the instant our atomic rename lands:
+		// the post-write stat must not pair the external identity with our state.
+		renameAfterHook.after = () => {
+			renameAfterHook.after = undefined;
+			writeExternalState(
+				storePath,
+				[
+					externalJob({
+						id: "external-raced",
+						prompt: "external wins",
+						sessionId: "session-1",
+						sessionFile: "/tmp/session-1.jsonl",
+					}),
+				],
+				new Date("2026-01-08T00:00:00.000Z"),
+			);
+		};
+		store.create({
+			activeSessionId: "active-2",
+			sessionId: "session-2",
+			sessionFile: "/tmp/session-2.jsonl",
+			cwd: "/tmp/project",
+			scheduleText: "in 1h",
+			prompt: "raced write",
+			now: start,
+		});
+
+		expect(store.list().map((candidate) => candidate.id)).toEqual(["external-raced"]);
+		expect(jobsReads(storePath)).toBe(1);
+		expect(store.list().map((candidate) => candidate.id)).toEqual(["external-raced"]);
+		expect(jobsReads(storePath)).toBe(1);
+
+		// A later mutation must operate on the external state, not our stale write.
+		const cancelled = store.cancel("external-raced");
+		expect(cancelled?.status).toBe("cancelled");
+		expect(store.list()[0]?.status).toBe("cancelled");
+	});
 });
+
+function setStatus(target: unknown, status: string): void {
+	(target as { status: string }).status = status;
+}
+
+interface MutableJobsState {
+	jobs: AgentCronJob[];
+	dispatches: Array<{ id: string; jobId: string; claimedAt: string; scheduledFor: string }>;
+}
