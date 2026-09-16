@@ -158,17 +158,23 @@ def wait(args: argparse.Namespace) -> None:
     runs = json.loads((Path(args.output) / "hosted-runs.json").read_text())
     deadline = time.time() + 330 * 60
     failures = []
-    for key, record in runs.items():
-        while True:
-            if time.time() > deadline:
-                raise RuntimeError(f"{key}: hosted evaluation did not finish in 24 hours")
-            detail = json.loads(run(["prime", "eval", "get", record["evaluation_id"], "--output", "json"]))
-            status = detail.get("status") or detail.get("evaluation", {}).get("status")
-            if status in TERMINAL_STATUSES:
-                break
-            time.sleep(30)
-        if status != "COMPLETED":
-            failures.append(f"{key}: {status} {detail.get('error_message', '')}")
+    try:
+        for key, record in runs.items():
+            while True:
+                if time.time() > deadline:
+                    raise RuntimeError(f"{key}: hosted evaluation did not finish in 24 hours")
+                detail = json.loads(
+                    run(["prime", "eval", "get", record["evaluation_id"], "--output", "json"])
+                )
+                status = detail.get("status") or detail.get("evaluation", {}).get("status")
+                if status in TERMINAL_STATUSES:
+                    break
+                time.sleep(30)
+            if status != "COMPLETED":
+                failures.append(f"{key}: {status} {detail.get('error_message', '')}")
+    except BaseException:
+        stop_started(runs)
+        raise
     if failures:
         raise RuntimeError("; ".join(failures))
 
