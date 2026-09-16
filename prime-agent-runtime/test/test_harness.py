@@ -1144,13 +1144,20 @@ class HarnessSearchTest(unittest.TestCase):
                     f"Session state notes about session handling {index}.",
                     id=f"common{index}",
                 )
+                state.entries["memory"][f"common{index}"].updated_at = (
+                    f"2026-08-0{index + 1}T00:00:00+00:00"
+                )
+            # The rare entry is the oldest, so it ranks first on
+            # distinctiveness alone, not recency.
             state.create_memory("Quantum note", "Only quantum annealing matters once.", id="rare")
+            state.entries["memory"]["rare"].updated_at = "2026-07-01T00:00:00+00:00"
 
             results = state.search("session quantum")
 
             # "session" matches 5 of 6 entries (log(1 + 6/5)) while "quantum"
             # matches 1 of 6 (log(1 + 6/1)), so the rare term wins even though
-            # the dense entries are newer.
+            # the dense entries are newer; without the discount they would
+            # win the recency tie-break instead.
             self.assertTrue(results)
             self.assertEqual(results[0].id, "rare")
             # Common terms are discounted, not erased: every matching entry still ranks.
