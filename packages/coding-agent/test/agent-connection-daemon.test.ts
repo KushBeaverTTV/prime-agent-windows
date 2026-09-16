@@ -23,6 +23,8 @@ import {
 	type DaemonCommand,
 	type DaemonOutbound,
 	type DaemonResponse,
+	failure,
+	success,
 } from "../src/modes/daemon/daemon-protocol.js";
 import { DaemonRoutedClient } from "../src/modes/daemon/daemon-routed-client.js";
 import type { DaemonWorkerClient } from "../src/modes/daemon/daemon-worker-client.js";
@@ -49,6 +51,7 @@ class FakeDaemonClient {
 	rlmChildrenGate: Promise<void> | undefined;
 	abortBashUnknownCommand = false;
 	abortAndClearQueueUnknownCommand = false;
+	abortAndSendQueuedUnknownCommand = false;
 	inputPauseAcquireGate: Promise<void> | undefined;
 	cronAddGate: Promise<void> | undefined;
 	promptGate: Promise<void> | undefined;
@@ -284,6 +287,10 @@ class FakeDaemonClient {
 					success: true,
 					data: { steering: ["aborted"], followUp: ["cleared"] },
 				};
+			case "abort_and_send_queued":
+				return this.abortAndSendQueuedUnknownCommand
+					? failure(command.id, command.type, "Unknown daemon command: abort_and_send_queued")
+					: success(command.id, command.type);
 			case "acquire_session_input_pause":
 				if (this.inputPauseAcquireGate) await this.inputPauseAcquireGate;
 				return {
@@ -3561,5 +3568,18 @@ describe("DaemonAgentConnection deferred session events", () => {
 		} finally {
 			await connection.dispose();
 		}
+	});
+
+	it("sends abort_and_send_queued only behind the advertised daemon capability", async () => {
+		const send = (client: FakeDaemonClient) =>
+			new DaemonAgentConnection(asDaemonClient(client), "active-1").abortAndSendQueued();
+		const capable = new FakeDaemonClient();
+		capable.serverCapabilities.add("abort_and_send_queued");
+		await expect(send(capable)).resolves.toBeUndefined();
+		expect(capable.requests).toEqual([{ type: "abort_and_send_queued", activeSessionId: "active-1" }]);
+		await expect(send(new FakeDaemonClient())).rejects.toThrow("does not support abort_and_send_queued");
+		const stale = Object.assign(new FakeDaemonClient(), { abortAndSendQueuedUnknownCommand: true });
+		stale.serverCapabilities.add("abort_and_send_queued");
+		await expect(send(stale)).rejects.toThrow("the daemon is running an older build");
 	});
 });
