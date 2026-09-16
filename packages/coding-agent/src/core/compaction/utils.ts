@@ -188,7 +188,11 @@ export function serializeConversation(messages: Message[]): string {
 				.map((c) => c.text)
 				.join("");
 			if (content) {
-				parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
+				// Keep the tool name and error status in the label so the
+				// summarizer can pair parallel results with their
+				// [Assistant tool calls] lines and preserve failures.
+				const label = msg.isError ? `[Tool result (${msg.toolName}, error)]` : `[Tool result (${msg.toolName})]`;
+				parts.push(`${label}: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
 			}
 		}
 	}

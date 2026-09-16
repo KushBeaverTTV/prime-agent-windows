@@ -259,8 +259,9 @@ Before summarization, messages are serialized to text via [`serializeConversatio
 [User]: What they said
 [Assistant thinking]: Internal reasoning
 [Assistant]: Response text
-[Assistant tool calls]: ipython(code="open('foo.ts').read()"); edit(path="bar.ts", ...)
-[Tool result]: Output from tool
+[Assistant tool calls]: ipython(code="open('foo.ts').read()"); bash(command="npm test")
+[Tool result (ipython)]: Output from tool
+[Tool result (bash, error)]: Output from a failed tool call
 ```
 
 This prevents the model from treating it as a conversation to continue.
@@ -324,7 +325,7 @@ pi.on("session_before_compact", async (event, ctx) => {
   // [Assistant thinking]: thinking content
   // [Assistant]: response text
   // [Assistant tool calls]: ipython(code="open('...').read()"); bash(command="...")
-  // [Tool result]: output text
+  // [Tool result (ipython)]: output text
 
   // Now send to your model for summarization
   const summary = await myModel.summarize(conversationText);

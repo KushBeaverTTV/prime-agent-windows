@@ -340,13 +340,13 @@ describe("Large session fixture", () => {
 // Conversation serialization (merged from compaction-serialization.test.ts)
 // ============================================================================
 
-function toolResult(text: string): Message {
+function toolResult(text: string, toolName = "ipython", isError = false): Message {
 	return {
 		role: "toolResult",
 		toolCallId: "tc1",
-		toolName: "ipython",
+		toolName,
 		content: [{ type: "text", text }],
-		isError: false,
+		isError,
 		timestamp: Date.now(),
 	};
 }
@@ -357,18 +357,20 @@ describe("serializeConversation", () => {
 		const tail = "T".repeat(500);
 		const result = serializeConversation([toolResult(head + "B".repeat(3069) + tail)]);
 
-		expect(result).toContain("[Tool result]:");
+		expect(result).toContain("[Tool result (ipython)]:");
 		expect(result).toContain(head);
 		expect(result).toContain(tail);
 		expect(result).toContain("[... 3069 characters truncated; first 1431 and last 500 kept ...]");
 		expect(result).not.toContain("B".repeat(10));
-		expect(result.length).toBeLessThanOrEqual("[Tool result]: ".length + 2000);
+		expect(result.length).toBeLessThanOrEqual("[Tool result (ipython)]: ".length + 2000);
 	});
 
-	it("leaves short tool results untouched", () => {
+	it.each([
+		["labels short success results with the tool name", "bash", false, "[Tool result (bash)]"],
+		["labels short error results as failed", "edit", true, "[Tool result (edit, error)]"],
+	])("%s", (_label, toolName, isError, label) => {
 		const shortContent = "x".repeat(1500);
-
-		expect(serializeConversation([toolResult(shortContent)])).toBe(`[Tool result]: ${shortContent}`);
+		expect(serializeConversation([toolResult(shortContent, toolName, isError)])).toBe(`${label}: ${shortContent}`);
 	});
 
 	it("does not truncate user or assistant messages", () => {
