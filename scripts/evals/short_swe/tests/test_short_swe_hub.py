@@ -43,19 +43,8 @@ def test_package_slices_match_the_manifest() -> None:
 
 def test_scaleswe_filter_selects_the_slice_and_keeps_all_images() -> None:
     source = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
-    match = re.search(r"FIXED_FILTER = (.+)", source)
-    assert match, "FIXED_FILTER not found"
-    expression = eval(  # noqa: S307 - the package's own filter expression
-        compile(
-            match.group(1).replace("FIXED_TASKS", repr(fixed_tasks("short-swe-scaleswe"))),
-            "<FIXED_FILTER>",
-            "eval",
-        )
-    )
-    fn = eval(expression)  # noqa: S307 - the package's own filter expression
-    for task in fixed_tasks("short-swe-scaleswe"):
-        assert fn({"instance_id": task})
-    assert not fn({"instance_id": "unselected"})
+    # The filter is a direct ID membership check, not an evaluated expression.
+    assert 'row["instance_id"] in fixed_ids' in source
     assert "filter_unavailable_images: bool = False" in source
 
 
@@ -66,6 +55,22 @@ def test_verified_and_pro_tasks_grade_in_fresh_verifiers() -> None:
         assert marker in source, package
         assert 'Artifact(source="/tmp/prime-agent.patch")' in source, package
         assert "patch_collect_command(" in source, package
+
+
+def test_scaleswe_filters_by_ids_without_eval() -> None:
+    taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
+    assert "filter_fn" not in taskset
+    assert "_resolve_filter_fn" not in taskset
+    assert "eval(" not in taskset
+    assert "fixed_ids" in taskset
+    assert 'row["instance_id"] in fixed_ids' in taskset
+
+
+def test_scaleswe_paths_include_symlinks_and_absolute_tools() -> None:
+    taskset = (module_dir("short-swe-scaleswe") / "taskset.py").read_text()
+    assert "/usr/bin/find" in taskset
+    assert "\( -type f -o -type l \)" in taskset
+    assert "/bin/rm" in taskset
 
 
 def test_scaleswe_env_is_a_pinned_single_agent_env() -> None:
@@ -189,7 +194,7 @@ def test_scaleswe_restore_fails_closed_without_blast_radius() -> None:
     # Anything enumerated after the agent but not in the snapshot is planted —
     # including gitignored files the git sweep cannot see — and is deleted.
     assert "if path not in pristine:" in taskset
-    assert 'await runtime.run(["rm", "f", "path], ENV)' in taskset or "rm" in taskset
+    assert 'await runtime.run(["/bin/rm", "-f", "--", path], {})' in taskset
     # The restore is proven by hashing the tree back to the snapshot; every failure
     # path scores zero without raising, so tampering cannot award or break the run.
     assert "test verification failed closed" in taskset

@@ -19,6 +19,7 @@ from typing import Literal
 from uuid import uuid4
 
 import verifiers.v1 as vf
+from pydantic import Field
 from verifiers.v1 import capture_patch
 
 logger = logging.getLogger(__name__)
@@ -44,33 +45,6 @@ ENV = {
     "TQDM_DISABLE": "1",
     "CI": "1",
 }
-
-_ALLOWED_FILTER_GLOBALS = {
-    "__builtins__": {},
-    "re": re,
-    "len": len,
-    "all": all,
-    "any": any,
-    "sum": sum,
-    "min": min,
-    "max": max,
-    "sorted": sorted,
-    "set": set,
-    "frozenset": frozenset,
-}
-
-
-def _resolve_filter_fn(expr: str):
-    if not isinstance(expr, str):
-        raise TypeError(f"filter_fn must be a string Python expression, got {type(expr).__name__}")
-    try:
-        fn = eval(expr, _ALLOWED_FILTER_GLOBALS, {})  # noqa: S307 - local user-supplied filter expression.
-    except Exception as exc:
-        raise ValueError(f"Failed to evaluate filter_fn expression: {exc!r}") from exc
-    if not callable(fn):
-        raise TypeError(f"filter_fn expression must evaluate to a callable, got {type(fn).__name__}")
-    return fn
-
 
 # Restore the test files to the base commit so the agent's edits to the source are scored
 # against the original tests (and tests it added are dropped). `$base` comes from the env.
@@ -180,10 +154,10 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
     NEEDS_CONTAINER = True
 
     TEST_PATHS = (
-        "find . -not -path './.git/*' -type f "
+        "/usr/bin/find . -not -path './.git/*' \( -type f -o -type l \) "
         r"\( -name 'test_*.py' -o -name '*_test.py' -o -name 'conftest.py' "
         r"-o -path '*/tests/*' -o -path '*/test/*' -o -path '*/Test/*' -o -path '*/Tests/*' \) "
-        r"| sed 's|^\./||'"
+        r"| /usr/bin/sed 's|^\./||'"
     )
 
     async def _test_paths(self, runtime: vf.Runtime) -> list[str]:
@@ -235,7 +209,7 @@ class ShortSWEScalesweTask(vf.Task[ShortSWEScalesweData]):
         current = await self._test_paths(runtime)
         for path in current:
             if path not in pristine:
-                await runtime.run(["rm", "-f", "--", path], ENV)
+                await runtime.run(["/bin/rm", "-f", "--", path], {})
         for path, data in pristine.items():
             await runtime.write(path, data)
         # Proof: the enumerated test tree must hash back to the snapshot exactly.
@@ -303,7 +277,6 @@ FIXED_TASKS = (
     "arviz-devs_preliz_pr249",
     "beetbox_beets_pr4386",
 )
-FIXED_FILTER = 'lambda row: row["instance_id"] in (' + ", ".join(f"'{task}'" for task in FIXED_TASKS) + ")"
 
 
 class ShortSWEScalesweConfig(vf.TasksetConfig):
@@ -312,8 +285,8 @@ class ShortSWEScalesweConfig(vf.TasksetConfig):
 
     dataset_name: ScaleSWEDataset = DATASET
     split: str = "train"
-    filter_fn: str | None = FIXED_FILTER
-    """Python expression string applied to raw HF rows during iteration."""
+    fixed_ids: set[str] = Field(default_factory=lambda: set(FIXED_TASKS))
+    """Instance ids to keep; the package default is the fixed published slice."""
     filter_unavailable_images: bool = False
     """Keep every fixed task: the slice was selected with eligible images, so the
     registry tags/list check is skipped at load."""
@@ -328,11 +301,9 @@ class ShortSWEScalesweTaskset(vf.Taskset[ShortSWEScalesweTask, ShortSWEScalesweC
             split=self.config.split,
             revision="8935f8e55244fd56080cdb8dcd0819a57e8a003c",
         )
-        filter_fn = _resolve_filter_fn(self.config.filter_fn) if self.config.filter_fn is not None else None
+        fixed_ids = self.config.fixed_ids
         if self.config.filter_unavailable_images:
-            source_indices = [
-                index for index, row in enumerate(dataset) if filter_fn is None or filter_fn(row)
-            ]
+            source_indices = [index for index, row in enumerate(dataset) if row["instance_id"] in fixed_ids]
             rows = dataset.select(source_indices)
             available = _available_images(set(rows["image_url"]))
             dropped = len(rows) - sum(image in available for image in rows["image_url"])
@@ -346,7 +317,7 @@ class ShortSWEScalesweTaskset(vf.Taskset[ShortSWEScalesweTask, ShortSWEScalesweC
         else:
             indexed_rows = (
                 (index, row)
-                for index, row in enumerate(row for row in dataset if filter_fn is None or filter_fn(row))
+                for index, row in enumerate(row for row in dataset if row["instance_id"] in fixed_ids)
             )
         for index, row in indexed_rows:
             yield ShortSWEScalesweTask(
