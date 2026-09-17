@@ -9,11 +9,13 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { DaemonClient } from "../packages/coding-agent/src/modes/daemon/daemon-client.js";
@@ -40,7 +42,7 @@ const FIXTURE = join(REPO_ROOT, "packages", "coding-agent", "test", "fixtures", 
 assert.ok(existsSync(FIXTURE), `missing lead-authored fixture: ${FIXTURE}`);
 
 const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-const root = mkdtempSync(join(tmpdir(), "prime-artifact "));
+const root = realpathSync.native(mkdtempSync(join(tmpdir(), "prime-artifact ")));
 mkdirSync(join(root, ".git"));
 const dir = join(root, "binaries");
 const cwd = join(root, "project \u00e4");
@@ -60,12 +62,24 @@ assert.ok(existsSync(exe), `copied executable missing: ${exe}`);
 copyFileSync(FIXTURE, join(cwd, "extension.ts"));
 
 const socket = `\\\\.\\pipe\\prime-windows-artifact-${randomUUID()}`;
+const shortTemp = ((): string | undefined => {
+	const result = spawnSync(
+		join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+		[
+			"-NoProfile",
+			"-Command",
+			`(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${root.replaceAll("'", "''")}').ShortPath`,
+		],
+		{ encoding: "utf8" },
+	);
+	return result.status === 0 && result.stdout.trim() ? result.stdout.trim() : undefined;
+})();
 const env: NodeJS.ProcessEnv = {
 	SystemRoot: process.env.SystemRoot,
 	SystemDrive: process.env.SystemDrive,
 	ComSpec: process.env.ComSpec,
-	TEMP: process.env.TEMP,
-	TMP: process.env.TMP,
+	TEMP: shortTemp ?? process.env.TEMP,
+	TMP: shortTemp ?? process.env.TMP,
 	USERPROFILE: home,
 	HOME: home,
 	PRIME_AGENT_CODING_AGENT_DIR: agentDir,
@@ -280,7 +294,11 @@ async function main(): Promise<void> {
 	const client = daemonClient();
 	await client.connect(10_000);
 	const hello = await client.waitForHello(10_000);
-	assert.equal(hello.runtime?.executablePath, exe, "daemon runtime executablePath mismatch");
+	assert.equal(typeof hello.runtime?.executablePath, "string", "daemon hello missing runtime.executablePath");
+	const executableExpected = statSync(exe, { bigint: true });
+	const executableActual = statSync(hello.runtime.executablePath, { bigint: true });
+	assert.equal(executableActual.dev, executableExpected.dev, "daemon runtime executablePath device mismatch");
+	assert.equal(executableActual.ino, executableExpected.ino, "daemon runtime executablePath inode mismatch");
 	supervisorPid = hello.supervisorPid;
 	const list = responseData<{ sessions: SessionSummary[] }>(
 		await client.request({ type: "list", all: true }),
@@ -392,9 +410,12 @@ async function main(): Promise<void> {
 		pythonSkills?: { packagePath: string }[];
 	};
 	assert.ok(bootstrap.pythonSkills && bootstrap.pythonSkills.length > 0, "bootstrap-version missing pythonSkills");
+	const canonicalDir = realpathSync.native(dir);
 	for (const skill of bootstrap.pythonSkills) {
+		assert.ok(existsSync(skill.packagePath), `python skill path missing: ${skill.packagePath}`);
+		const rel = relative(canonicalDir, realpathSync.native(skill.packagePath));
 		assert.ok(
-			skill.packagePath.startsWith(dir),
+			!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`),
 			`python skill resolved outside packaged runtime: ${skill.packagePath}`,
 		);
 	}
