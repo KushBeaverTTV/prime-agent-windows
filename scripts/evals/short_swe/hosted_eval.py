@@ -22,9 +22,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent.parent))
 
-HOSTED_EVALUATION_TIMEOUT_MINUTES = 300
-"""The GitHub-hosted runner enforces a hard 360-minute job limit; the hosted suite must
-finish (and its episodes collect) inside that budget or the check fails closed."""
+GITHUB_JOB_LIMIT_MINUTES = 360
+"""GitHub kills a hosted job at this limit, so every budget below has to fit inside it."""
+
+HOSTED_EVALUATION_TIMEOUT_MINUTES = 240
+"""Per-evaluation platform timeout, capped further by the job budget left at launch."""
+
+COLLECT_RESERVE_MINUTES = 20
+"""Time kept back after the wait for collection, pairing, and reporting."""
+
+POLL_TIMEOUT_SECONDS = 120
+"""Bound on one `prime eval get` call, so a stalled request cannot pass the wait deadline."""
+
+COLLECT_TIMEOUT_SECONDS = 600
+"""Bound on one `prime eval samples` call, so collection cannot hang a finished run."""
+
+JOB_DEADLINE_ENV = "BEHAVIORAL_JOB_DEADLINE_EPOCH"
+"""The workflow exports the epoch when the runner kills this job."""
 
 HOSTED_ENVIRONMENTS = {
     "swebench-verified": "primeintellect/short-swe-verified@0.1.13",
@@ -35,16 +49,44 @@ EVAL_ID_RE = re.compile(r"Evaluation ID: (\S+)")
 TERMINAL_STATUSES = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}
 
 
-def run(command: list[str], *, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        env={**os.environ, **(env or {})},
-    )
+def run(command: list[str], *, env: dict[str, str] | None = None, timeout: float | None = None) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **(env or {})},
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"{command[0]} did not answer within {timeout:.0f}s") from error
     if result.returncode:
         raise RuntimeError(f"{command[0]} failed: {result.stdout}\n{result.stderr}")
     return result.stdout
+
+
+def job_seconds_left() -> float:
+    """Seconds until GitHub kills this job, taken from the deadline the workflow exports."""
+    raw = os.environ.get(JOB_DEADLINE_ENV)
+    if raw is None:
+        raise RuntimeError(f"{JOB_DEADLINE_ENV} is not set, so the job budget is unknown")
+    try:
+        return float(raw) - time.time()
+    except ValueError as error:
+        raise RuntimeError(f"{JOB_DEADLINE_ENV} is not a timestamp") from error
+
+
+def wait_deadline() -> float:
+    """Polling stops before the runner would kill the job and skip the stop path."""
+    return time.time() + job_seconds_left() - COLLECT_RESERVE_MINUTES * 60
+
+
+def evaluation_timeout_minutes() -> int:
+    """Cap a hosted run so its platform timeout and the collection both fit the job budget."""
+    remaining = job_seconds_left() - COLLECT_RESERVE_MINUTES * 60
+    if remaining <= 0:
+        raise RuntimeError("the behavioral job budget is exhausted before launch")
+    return max(1, min(HOSTED_EVALUATION_TIMEOUT_MINUTES, int(remaining // 60)))
 
 
 def launch(args: argparse.Namespace) -> None:
@@ -84,7 +126,7 @@ def launch(args: argparse.Namespace) -> None:
                 "--max-concurrent",
                 str(manifest["max_concurrent"]),
                 "--timeout-minutes",
-                str(HOSTED_EVALUATION_TIMEOUT_MINUTES),
+                str(evaluation_timeout_minutes()),
                 "--eval-name",
                 name,
                 "--custom-secrets",
@@ -154,17 +196,30 @@ def stop_started(runs: dict[str, dict]) -> None:
         )
 
 
+def stop(args: argparse.Namespace) -> None:
+    """Stop hosted evaluations a cancelled or failed job left running."""
+    try:
+        runs = json.loads((Path(args.output) / "hosted-runs.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    stop_started(runs)
+
+
 def wait(args: argparse.Namespace) -> None:
     runs = json.loads((Path(args.output) / "hosted-runs.json").read_text())
-    deadline = time.time() + 330 * 60
+    deadline = wait_deadline()
     failures = []
     try:
         for key, record in runs.items():
             while True:
-                if time.time() > deadline:
-                    raise RuntimeError(f"{key}: hosted evaluation did not finish in 24 hours")
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise RuntimeError(f"{key}: hosted evaluation did not finish inside the job budget")
                 detail = json.loads(
-                    run(["prime", "eval", "get", record["evaluation_id"], "--output", "json"])
+                    run(
+                        ["prime", "eval", "get", record["evaluation_id"], "--output", "json"],
+                        timeout=min(POLL_TIMEOUT_SECONDS, remaining),
+                    )
                 )
                 status = detail.get("status") or detail.get("evaluation", {}).get("status")
                 if status in TERMINAL_STATUSES:
@@ -185,7 +240,12 @@ def collect(args: argparse.Namespace) -> None:
         side, taskset_id = key.split("/", 1)
         target = Path(args.output) / "raw-eval" / side / taskset_id
         target.mkdir(parents=True, exist_ok=True)
-        payload = json.loads(run(["prime", "eval", "samples", record["evaluation_id"], "--output", "json"]))
+        payload = json.loads(
+            run(
+                ["prime", "eval", "samples", record["evaluation_id"], "--output", "json"],
+                timeout=COLLECT_TIMEOUT_SECONDS,
+            )
+        )
         samples = payload.get("samples") or []
         expected = record.get("num_examples")
         if expected is not None and len(samples) != expected:
@@ -220,6 +280,9 @@ def main() -> None:
     collect_parser = sub.add_parser("collect")
     collect_parser.add_argument("--output", required=True)
     collect_parser.set_defaults(func=collect)
+    stop_parser = sub.add_parser("stop")
+    stop_parser.add_argument("--output", required=True)
+    stop_parser.set_defaults(func=stop)
     args = parser.parse_args()
     args.func(args)
 

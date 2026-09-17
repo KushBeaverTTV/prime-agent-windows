@@ -1,8 +1,12 @@
 """Focused tests for the hosted launch/wait/collect orchestration."""
 
 import json
+import re
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
@@ -56,6 +60,7 @@ def test_launch_starts_six_evaluations_with_the_manifest_identity(tmp_path: Path
         return FakePopen(command)
 
     monkeypatch.setattr(hosted_eval.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv(hosted_eval.JOB_DEADLINE_ENV, str(time.time() + 300 * 60))
     args = type(
         "Args",
         (),
@@ -81,6 +86,9 @@ def test_launch_starts_six_evaluations_with_the_manifest_identity(tmp_path: Path
     for command in commands:
         assert command[command.index("-m") + 1] == "internal/glm-5.3-fast"
         assert command[command.index("--max-concurrent") + 1] == "4"
+        assert command[command.index("--timeout-minutes") + 1] == str(
+            hosted_eval.HOSTED_EVALUATION_TIMEOUT_MINUTES
+        )
         assert command[command.index("-r") + 1] == "1"
         secrets = json.loads(command[command.index("--custom-secrets") + 1])
         assert set(secrets) == {
@@ -188,6 +196,7 @@ def test_launch_stops_created_evaluations_when_a_spawn_fails(tmp_path: Path, mon
 
     monkeypatch.setattr(hosted_eval.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(hosted_eval, "run", lambda *a, **k: "{}")
+    monkeypatch.setenv(hosted_eval.JOB_DEADLINE_ENV, str(time.time() + 300 * 60))
     monkeypatch.setattr(hosted_eval.subprocess, "run", lambda command, **kwargs: fake_run(command))
     args = type(
         "Args",
@@ -209,8 +218,67 @@ def test_launch_stops_created_evaluations_when_a_spawn_fails(tmp_path: Path, mon
     assert len(stopped) == 4 and all(isinstance(value, str) for value in stopped[2:])
 
 
-def test_hosted_budgets_fit_the_github_job_limit() -> None:
-    assert hosted_eval.HOSTED_EVALUATION_TIMEOUT_MINUTES == 300
-    source = hosted_eval.__file__
-    text = Path(source).read_text()
-    assert "deadline = time.time() + 330 * 60" in text
+def test_hosted_budgets_fit_the_github_job_limit(monkeypatch) -> None:
+    workflow = (ROOT / ".github" / "workflows" / "behavioral-evals.yml").read_text()
+    job_limit = int(re.search(r"\n    timeout-minutes: (\d+)", workflow).group(1))
+    assert hosted_eval.GITHUB_JOB_LIMIT_MINUTES == job_limit
+    assert f"BEHAVIORAL_JOB_DEADLINE_EPOCH=$(( $(date +%s) + {job_limit} * 60 ))" in workflow
+    # The per-evaluation cap plus the collection reserve have to fit inside the job limit.
+    assert hosted_eval.HOSTED_EVALUATION_TIMEOUT_MINUTES + hosted_eval.COLLECT_RESERVE_MINUTES <= job_limit
+    budget_minutes = 100
+    monkeypatch.setenv(hosted_eval.JOB_DEADLINE_ENV, str(time.time() + budget_minutes * 60 + 1))
+    assert hosted_eval.evaluation_timeout_minutes() == budget_minutes - hosted_eval.COLLECT_RESERVE_MINUTES
+    remaining = hosted_eval.wait_deadline() - time.time()
+    assert 0 < remaining <= (budget_minutes - hosted_eval.COLLECT_RESERVE_MINUTES) * 60 + 1
+    monkeypatch.setenv(hosted_eval.JOB_DEADLINE_ENV, str(time.time() - 60))
+    with pytest.raises(RuntimeError, match="budget"):
+        hosted_eval.evaluation_timeout_minutes()
+    monkeypatch.delenv(hosted_eval.JOB_DEADLINE_ENV)
+    with pytest.raises(RuntimeError, match=hosted_eval.JOB_DEADLINE_ENV):
+        hosted_eval.wait_deadline()
+
+
+def test_wait_bounds_each_poll_and_stops_runs_when_one_stalls(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "hosted"
+    output.mkdir()
+    runs = {"base/swebench-verified": {"evaluation_id": "id-1"}}
+    (output / "hosted-runs.json").write_text(json.dumps(runs))
+    timeouts = []
+
+    def fake_run(command, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return json.dumps({"status": "COMPLETED"})
+
+    args = type("Args", (), {"output": str(output)})()
+    monkeypatch.setattr(hosted_eval, "run", fake_run)
+    monkeypatch.setenv(hosted_eval.JOB_DEADLINE_ENV, str(time.time() + 120 * 60))
+    hosted_eval.wait(args)
+    assert timeouts
+    assert all(value and 0 < value <= hosted_eval.POLL_TIMEOUT_SECONDS for value in timeouts)
+
+    stopped = []
+    monkeypatch.setattr(hosted_eval, "stop_started", lambda records: stopped.append(sorted(records)))
+
+    def stalled_poll(command, **kwargs):
+        raise RuntimeError("prime did not answer within 120s")
+
+    monkeypatch.setattr(hosted_eval, "run", stalled_poll)
+    with pytest.raises(RuntimeError, match="did not answer"):
+        hosted_eval.wait(args)
+    assert stopped == [["base/swebench-verified"]]
+
+
+def test_stop_is_best_effort_and_parses_launcher_logs(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "hosted"
+    logs = output / "launch-logs"
+    logs.mkdir(parents=True)
+    log = logs / "base-swebench-verified.log"
+    log.write_text("Evaluation ID: id-1\n")
+    (output / "hosted-runs.json").write_text(json.dumps({"base/swebench-verified": {"log": str(log)}}))
+    stopped = []
+    monkeypatch.setattr(hosted_eval.subprocess, "run", lambda command, **kwargs: stopped.append(command))
+    hosted_eval.stop(type("Args", (), {"output": str(output)})())
+    assert stopped == [["prime", "eval", "stop", "id-1"]]
+    missing = tmp_path / "missing"
+    hosted_eval.stop(type("Args", (), {"output": str(missing)})())
+    assert stopped == [["prime", "eval", "stop", "id-1"]]

@@ -235,18 +235,8 @@ def run_oracle(executable: Path, config: Path, output: Path) -> None:
     validate_oracle_episode(episodes[0])
 
 
-def read_existing(output: Path, configs: Path, base_stats: Path | None = None) -> dict[str, list[dict]]:
+def read_existing(output: Path, configs: Path) -> dict[str, list[dict]]:
     """Read pre-collected episode files (hosted evaluations pulled by `hosted_eval.py`)."""
-    if base_stats is not None:
-        cached = json.loads(base_stats.read_text())
-        if not isinstance(cached, list):
-            raise ValueError("cached base stats must be a JSON list")
-        head = [
-            record
-            for taskset in sorted((configs / "head").glob("*.toml"))
-            for record in read_taskset(output / "head" / taskset.stem, taskset.stem)
-        ]
-        return {"base": cached, "head": head}
     return {
         side: [
             record
@@ -264,7 +254,6 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--request", required=True, type=Path)
     parser.add_argument("--result", required=True, type=Path)
-    parser.add_argument("--base-stats", type=Path, default=None)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--oracle-only", action="store_true")
     mode.add_argument("--from-existing", action="store_true")
@@ -277,7 +266,7 @@ def main() -> None:
             return
         started = time.time()
         if args.from_existing:
-            sides = read_existing(args.output, args.configs, args.base_stats)
+            sides = read_existing(args.output, args.configs)
         else:
             run_oracle(args.eval, args.configs / "oracle.toml", args.output)
             sides = read_existing(args.output, args.configs)
