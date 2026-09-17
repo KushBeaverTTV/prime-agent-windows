@@ -3,6 +3,7 @@ import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { createCompactionSummaryMessage } from "../src/core/messages.js";
+import { CollapsibleErrorComponent } from "../src/modes/interactive/components/collapsible-error.js";
 import { CompactionSummaryMessageComponent } from "../src/modes/interactive/components/compaction-summary-message.js";
 import { CustomEditor } from "../src/modes/interactive/components/custom-editor.js";
 import { ToolExecutionComponent } from "../src/modes/interactive/components/tool-execution.js";
@@ -95,5 +96,12 @@ describe("conversation click regions", () => {
 		expect(editor.getCursor()).toEqual({ line: 0, col: textCol });
 		expect(mockTui.setFocus).toHaveBeenCalledWith(editor);
 		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+	});
+
+	test("wrapped collapsed errors expose every summary row", () => {
+		const error = new CollapsibleErrorComponent({ text: "first\nsecond", summary: "a summary long enough to wrap" });
+		const lines = error.render(12);
+		expect(lines.length).toBeGreaterThan(1);
+		expect(error.getClickRegions()[0]!.height).toBe(lines.length);
 	});
 });

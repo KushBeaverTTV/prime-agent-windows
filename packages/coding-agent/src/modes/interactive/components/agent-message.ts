@@ -69,7 +69,7 @@ export class AgentMessageComponent extends Container {
 							line: leadingSpace ? 1 : 0,
 							col: 0,
 							width,
-							height: 1,
+							height: this.header.render(width).length,
 							onClick: () => this.setExpanded(!this.expanded),
 						},
 					]

@@ -108,15 +108,19 @@ export class CollapsibleErrorComponent implements Component {
 			return [];
 		}
 
-		this.clickRegions = [{ line: 0, col: 0, width, height: 1, onClick: () => this.setExpanded(!this.expanded) }];
 		const collapsible = this.options.forceCollapse ?? shouldCollapseErrorDetails(text);
 		if (!collapsible || this.expanded) {
+			this.clickRegions = [{ line: 0, col: 0, width, height: 1, onClick: () => this.setExpanded(!this.expanded) }];
 			return this.renderText(text, width);
 		}
 
 		const summary = normalizeErrorDetails(this.options.summary ?? summarizeErrorDetails(text));
 		const inlineHint = `${summary} ${expandCollapseHint("app.tools.expand", false)}`;
-		return this.renderText(inlineHint, width, "error");
+		const lines = this.renderText(inlineHint, width, "error");
+		this.clickRegions = [
+			{ line: 0, col: 0, width, height: lines.length, onClick: () => this.setExpanded(!this.expanded) },
+		];
+		return lines;
 	}
 
 	private renderText(text: string, width: number, color: "error" | "muted" = "error"): string[] {
