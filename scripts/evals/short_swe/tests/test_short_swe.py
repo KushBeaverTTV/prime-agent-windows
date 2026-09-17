@@ -280,6 +280,32 @@ def fake_trace(*, ok: bool = True, timeout: bool = False):
     )
 
 
+def test_terminal_5xx_tolerates_retried_rate_limits() -> None:
+    outage = SimpleNamespace(type="ProviderError", status_code=503, message="")
+    rate_limit = SimpleNamespace(type="ProviderError", status_code=429, message="rate limited")
+    trace = fake_trace(ok=False, timeout=True)
+    trace.rewards = {}
+    trace.reward = 0.0
+    trace.errors = [outage]
+    trace.calls = [
+        SimpleNamespace(error=rate_limit, node=0, usage=None, model="internal/glm-5.3-fast"),
+        SimpleNamespace(error=outage, node=0, usage=None, model="internal/glm-5.3-fast"),
+    ]
+    record = evaluate.trace_record(SimpleNamespace(traces=[trace], errors=[], ok=False), "suite")
+    assert record["model_failure"] is True
+    trace.calls[0].error = SimpleNamespace(type="ProviderError", status_code=400, message="context limit")
+    with pytest.raises(ValueError, match="complete trace or model outcome"):
+        evaluate.trace_record(SimpleNamespace(traces=[trace], errors=[], ok=False), "suite")
+
+
+def test_non_finite_aggregate_reward_fails() -> None:
+    trace = fake_trace()
+    trace.rewards = {"reward": SimpleNamespace(score=1.0, weight=1.0, value=float("inf"))}
+    trace.reward = float("inf")
+    with pytest.raises(ValueError, match="aggregate reward"):
+        evaluate.trace_record(SimpleNamespace(traces=[trace], errors=[], ok=True), "suite")
+
+
 def test_trace_record_uses_native_usage_buckets() -> None:
     record = evaluate.trace_record(SimpleNamespace(traces=[fake_trace()], errors=[], ok=True), "suite")
     assert record["resolved"] is True

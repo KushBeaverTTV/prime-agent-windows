@@ -39,10 +39,11 @@ def recognized_model_failure(trace) -> bool:
             for error in call_errors
         )
     if terminal.type == "ProviderError" and terminal.status_code in {500, 502, 503, 504}:
+        # Retryable call errors are recorded on the exchanges the client retried, so a rate
+        # limit under the shared concurrency limit does not contradict a terminal outage.
+        transient = {429, 500, 502, 503, 504}
         provider_call_errors = [error for error in call_errors if error.type == "ProviderError"]
-        if any(error.status_code not in {500, 502, 503, 504} for error in provider_call_errors):
-            return False
-        return True
+        return all(error.status_code in transient for error in provider_call_errors)
     return (
         not call_errors
         and terminal.type == "HarnessError"
@@ -146,6 +147,8 @@ def trace_record(episode, taskset: str) -> dict:
     ]
     if any(isinstance(value, bool) or not math.isfinite(value) for value in rewards):
         raise ValueError(f"{identity} has invalid reward values")
+    if not math.isfinite(trace.reward):
+        raise ValueError(f"{identity} has invalid aggregate reward")
     models = {call.model for call in trace.calls if call.model is not None}
     if len(models) != 1:
         raise ValueError(f"{identity} did not use exactly one model")
