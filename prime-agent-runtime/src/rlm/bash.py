@@ -1118,6 +1118,8 @@ def _separates_commands(text: str) -> bool:
     them (redirections do not and are masked out before this runs).
     """
     return any(ch in ";&|\n()" for ch in text)
+
+
 def _join_line_continuations(command: str) -> str:
     """Remove backslash-newline line continuations the way the shell does.
 
@@ -2401,7 +2403,7 @@ class DestructiveRmRefusalError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class _ShellWord:
+class _RmShellWord:
     """One shell word: its unquoted argv value plus the span it came from."""
 
     value: str
@@ -2473,7 +2475,7 @@ def _paren_positions(command: str) -> list[tuple[int, str]]:
     return positions
 
 
-def _scan_shell_words(command: str) -> list[_ShellWord]:
+def _scan_shell_words(command: str) -> list[_RmShellWord]:
     """Split `command` into shell words the way the shell builds argv.
 
     Quotes and backslash escapes fold into the word value, comments are
@@ -2484,7 +2486,7 @@ def _scan_shell_words(command: str) -> list[_ShellWord]:
     a conservative approximation, not a parse: anything it cannot represent
     exactly ends up refused, never silently allowed.
     """
-    words: list[_ShellWord] = []
+    words: list[_RmShellWord] = []
 
     def scan_region(start: int, end: int, *, starts_command: bool) -> None:
         i = start
@@ -2496,7 +2498,7 @@ def _scan_shell_words(command: str) -> list[_ShellWord]:
         def flush(starts_next_command: bool) -> None:
             nonlocal word_start, first_word_pending
             if word_start != -1:
-                words.append(_ShellWord("".join(value), word_start, i, word_starts_command))
+                words.append(_RmShellWord("".join(value), word_start, i, word_starts_command))
                 value.clear()
                 word_start = -1
                 first_word_pending = starts_next_command
@@ -2590,7 +2592,7 @@ def _is_rm_word(value: str) -> bool:
 
 
 def _find_rf_rm_invocations_in_words(
-    words: list[_ShellWord],
+    words: list[_RmShellWord],
 ) -> list[tuple[int, list[str]]]:
     """Find every rm invocation combining recursive and force flags
     (-r/-R/--recursive plus -f, including combined -rf/-fr), returning the
@@ -2678,7 +2680,7 @@ def _expansion_is_resolvable(token: str) -> bool:
     return True
 
 
-def _unresolvable_expansion_rm_reasons(words: list[_ShellWord]) -> list[str]:
+def _unresolvable_expansion_rm_reasons(words: list[_RmShellWord]) -> list[str]:
     """Refusal reasons for rm-shaped invocations whose command word or
     flags/operands hide behind expansion the shell performs after the guard
     runs. A `R=rm; $R -rf x` command word and a `flags=-rf; rm $flags /`
@@ -2739,7 +2741,7 @@ _SHELL_DASH_C_INTERPRETERS = frozenset(
 )
 
 
-def _alias_definitions(words: list[_ShellWord]) -> dict[str, str]:
+def _alias_definitions(words: list[_RmShellWord]) -> dict[str, str]:
     """Alias definitions made by the command (`alias name='command text'`),
     applied in order so redefinitions and `unalias` win."""
     aliases: dict[str, str] = {}
@@ -2762,7 +2764,7 @@ def _alias_definitions(words: list[_ShellWord]) -> dict[str, str]:
 def _wrapped_payloads_hide_recursive_force_rm(
     command: str,
     depth: int = 0,
-    words: list[_ShellWord] | None = None,
+    words: list[_RmShellWord] | None = None,
     aliases: dict[str, str] | None = None,
 ) -> bool:
     """True when a quoted `eval` or shell `-c` payload hides a
@@ -2991,7 +2993,7 @@ def _boundary_positions(command: str) -> list[tuple[int, str]]:
 
 def _tracked_cwd_at_words(
     command: str,
-    words: list[_ShellWord],
+    words: list[_RmShellWord],
     start_cwd: str | None,
     *,
     home_untrackable: bool = False,
@@ -3170,14 +3172,17 @@ def _resolve_rm_operand(operand: str, workspace_root: str, cwd: str) -> str | No
     return None
 
 
-def _heredoc_body_spans(command: str) -> list[tuple[int, int]]:
+def _heredoc_body_spans(command: str) -> list[tuple[int, int, bool]]:
     """Body extents of every parsable here-document in `command`.
 
-    Structural and quote- and comment-aware: heredoc operators inside quoted
-    spans, comments, or other heredoc bodies are skipped, and an unterminated
-    or unparsable heredoc reports no span (its body stays live, which is the
-    conservative direction)."""
-    spans: list[tuple[int, int]] = []
+    Each span is `(start, end, expands)`: `expands` is False for a quoted or
+    escaped delimiter, whose body is inert data, and True otherwise, because
+    the shell expands `$(...)` and backtick spans there before the consumer
+    sees the text. Structural and quote- and comment-aware: heredoc operators
+    inside quoted spans, comments, or other heredoc bodies are skipped, and an
+    unterminated or unparsable heredoc reports no span (its body stays live,
+    which is the conservative direction)."""
+    spans: list[tuple[int, int, bool]] = []
     i = 0
     n = len(command)
     while i < n:
@@ -3225,6 +3230,7 @@ def _heredoc_body_spans(command: str) -> list[tuple[int, int]]:
                 j += 1
             while j < n and command[j] in " \t":
                 j += 1
+            expands = True
             if command[j : j + 1] in ('"', "'"):
                 quote = command[j]
                 closing = command.find(quote, j + 1)
@@ -3233,6 +3239,7 @@ def _heredoc_body_spans(command: str) -> list[tuple[int, int]]:
                     continue
                 delimiter = command[j + 1 : closing]
                 j = closing + 1
+                expands = False  # a quoted word turns expansion off
             else:
                 k = j
                 while k < n and command[k] not in " \t\n;&|<>":
@@ -3263,7 +3270,7 @@ def _heredoc_body_spans(command: str) -> list[tuple[int, int]]:
             if end is None:
                 i = j  # unterminated heredoc: leave live
                 continue
-            spans.append((body_start + 1, end))
+            spans.append((body_start + 1, end, expands))
             i = end
             continue
         i += 1
@@ -3278,7 +3285,7 @@ _EXEC_STYLE_PREFIXES = frozenset(
 )
 
 
-def _script_runner_word_indices(words: list[_ShellWord]) -> list[int]:
+def _script_runner_word_indices(words: list[_RmShellWord]) -> list[int]:
     """Indices of words that can run heredoc text: an interpreter feeding on
     stdin (`sh <<EOF`), a pipeline consumer after the terminator
     (`{ cat <<EOF ... } | sh`), a script invocation (`sh s.sh`, `./s.sh`,
@@ -3322,7 +3329,7 @@ def _interpret_shell_escapes(text: str) -> str:
     )
 
 
-def _stdin_shell_feed_texts(prepared: str, words: list[_ShellWord]) -> list[tuple[str, int]]:
+def _stdin_shell_feed_texts(prepared: str, words: list[_RmShellWord]) -> list[tuple[str, int]]:
     """(producer text, interpreter word index) pairs for pipelines feeding a
     bare stdin shell: `printf 'rm -rf x\\n' | sh` runs the producer's
     output as commands, so that text must be scanned. Literal interpreters
@@ -3405,7 +3412,7 @@ def _rm_guard_scan_texts(normalized: str) -> tuple[str, list[str]]:
     if not spans:
         return normalized, []
     outer = list(normalized)
-    for start, end in spans:
+    for start, end, _expands in spans:
         for pos in range(start, end):
             outer[pos] = " "
     outer_text = "".join(outer)
@@ -3416,11 +3423,11 @@ def _rm_guard_scan_texts(normalized: str) -> tuple[str, list[str]]:
         # the result, so those spans still execute (same rule as the git
         # guard's heredoc masking).
         outer = list(normalized)
-        for start, end in spans:
-            _mask_heredoc_body(outer, normalized, start, end)
+        for start, end, expands in spans:
+            _mask_heredoc_body(outer, normalized, start, end, expands)
         outer_text = "".join(outer)
         return outer_text, []
-    return outer_text, [normalized[start:end] for start, end in spans]
+    return outer_text, [normalized[start:end] for start, end, _expands in spans]
 
 
 def _format_rm_operand_refusal(reasons: list[str], live_bypass_attempt: bool) -> str:
@@ -3466,7 +3473,7 @@ def _format_rm_wrapper_refusal() -> str:
     )
 
 
-def _command_reassigns_env(words: list[_ShellWord], name: str) -> bool:
+def _command_reassigns_env(words: list[_RmShellWord], name: str) -> bool:
     """True when the command assigns, appends to, exports, or unsets `name`,
     so operands whose expansion depends on it cannot be taken from the
     kernel environment."""
@@ -3483,7 +3490,7 @@ def _command_reassigns_env(words: list[_ShellWord], name: str) -> bool:
 
 
 def _rm_invocation_reasons(
-    words: list[_ShellWord],
+    words: list[_RmShellWord],
     invocations: list[tuple[int, list[str]]],
     workspace_root: str,
     tracked_at: list[list[str | None]],
