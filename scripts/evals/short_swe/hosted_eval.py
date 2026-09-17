@@ -37,6 +37,9 @@ POLL_TIMEOUT_SECONDS = 120
 COLLECT_TIMEOUT_SECONDS = 600
 """Bound on one `prime eval samples` call, so collection cannot hang a finished run."""
 
+STOP_TIMEOUT_SECONDS = 60
+"""Bound on one `prime eval stop` call, so six stalls still leave the finisher time to run."""
+
 JOB_DEADLINE_ENV = "BEHAVIORAL_JOB_DEADLINE_EPOCH"
 """The workflow exports the epoch when the runner kills this job."""
 
@@ -189,11 +192,15 @@ def stop_started(runs: dict[str, dict]) -> None:
             if not match:
                 continue
             evaluation_id = match.group(1)
-        subprocess.run(
-            ["prime", "eval", "stop", evaluation_id],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            subprocess.run(
+                ["prime", "eval", "stop", evaluation_id],
+                capture_output=True,
+                text=True,
+                timeout=STOP_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"{evaluation_id}: stop did not answer, leaving it to its own deadline", file=sys.stderr)
 
 
 def stop(args: argparse.Namespace) -> None:

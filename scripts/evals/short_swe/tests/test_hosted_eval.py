@@ -276,9 +276,23 @@ def test_stop_is_best_effort_and_parses_launcher_logs(tmp_path: Path, monkeypatc
     log.write_text("Evaluation ID: id-1\n")
     (output / "hosted-runs.json").write_text(json.dumps({"base/swebench-verified": {"log": str(log)}}))
     stopped = []
-    monkeypatch.setattr(hosted_eval.subprocess, "run", lambda command, **kwargs: stopped.append(command))
-    hosted_eval.stop(type("Args", (), {"output": str(output)})())
+    timeouts = []
+
+    def fake_run(command, **kwargs):
+        stopped.append(command)
+        timeouts.append(kwargs.get("timeout"))
+
+    monkeypatch.setattr(hosted_eval.subprocess, "run", fake_run)
+    args = type("Args", (), {"output": str(output)})()
+    hosted_eval.stop(args)
     assert stopped == [["prime", "eval", "stop", "id-1"]]
+    assert timeouts == [hosted_eval.STOP_TIMEOUT_SECONDS]
     missing = tmp_path / "missing"
     hosted_eval.stop(type("Args", (), {"output": str(missing)})())
     assert stopped == [["prime", "eval", "stop", "id-1"]]
+
+    def hung_run(command, **kwargs):
+        raise hosted_eval.subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+
+    monkeypatch.setattr(hosted_eval.subprocess, "run", hung_run)
+    hosted_eval.stop(args)
