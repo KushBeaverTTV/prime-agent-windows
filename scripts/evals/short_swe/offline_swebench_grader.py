@@ -142,14 +142,16 @@ def django_log(log: str, _config: dict) -> dict[str, str]:
 def seaborn_log(log: str, _config: dict) -> dict[str, str]:
     status = StatusMap()
     for line in log.splitlines():
+        fields = line.split()
         if line.startswith("FAILED"):
-            status[line.split()[1]] = "FAILED"
+            if len(fields) > 1:
+                status[fields[1]] = "FAILED"
         elif " PASSED " in line:
-            fields = line.split()
             if len(fields) > 1 and fields[1] == "PASSED":
                 status[fields[0]] = "PASSED"
         elif line.startswith("PASSED"):
-            status[line.split()[1]] = "PASSED"
+            if len(fields) > 1:
+                status[fields[1]] = "PASSED"
     return status
 
 

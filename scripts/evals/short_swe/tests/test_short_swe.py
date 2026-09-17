@@ -74,6 +74,19 @@ def test_manifest_is_the_fixed_pinned_suite() -> None:
     assert len(pro_repositories) == 8
 
 
+def test_seaborn_parser_ignores_standalone_status_words() -> None:
+    config = {
+        "instance_id": "mwaskom__seaborn-test",
+        "repo": "mwaskom/seaborn",
+        "FAIL_TO_PASS": json.dumps(["tests/test_fix.py::test_fixed"]),
+        "PASS_TO_PASS": json.dumps(["tests/test_old.py::test_still_works"]),
+    }
+    log = "FAILED\nPASSED\nPASSED tests/test_fix.py::test_fixed\nPASSED tests/test_old.py::test_still_works\n"
+    assert offline_swebench_grader.grade(config, log)[config["instance_id"]]["resolved"] is True
+    with pytest.raises(ValueError, match="missing 2 expected"):
+        offline_swebench_grader.grade(config, "FAILED\nPASSED\n")
+
+
 def test_offline_verified_grader_requires_all_expected_tests() -> None:
     config = {
         "instance_id": "astropy__astropy-test",
