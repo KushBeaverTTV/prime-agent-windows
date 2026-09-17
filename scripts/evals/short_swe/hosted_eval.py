@@ -35,7 +35,7 @@ POLL_TIMEOUT_SECONDS = 120
 """Bound on one `prime eval get` call, so a stalled request cannot pass the wait deadline."""
 
 COLLECT_TIMEOUT_SECONDS = 600
-"""Bound on one `prime eval samples` call, so collection cannot hang a finished run."""
+"""Bound on one `prime eval samples` call, inside the collection reserve."""
 
 STOP_TIMEOUT_SECONDS = 60
 """Bound on one `prime eval stop` call, so six stalls still leave the finisher time to run."""
@@ -243,14 +243,18 @@ def wait(args: argparse.Namespace) -> None:
 
 def collect(args: argparse.Namespace) -> None:
     runs = json.loads((Path(args.output) / "hosted-runs.json").read_text())
+    deadline = time.time() + COLLECT_RESERVE_MINUTES * 60
     for key, record in runs.items():
         side, taskset_id = key.split("/", 1)
         target = Path(args.output) / "raw-eval" / side / taskset_id
         target.mkdir(parents=True, exist_ok=True)
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            raise RuntimeError("collection exceeded its reserve before writing every episode")
         payload = json.loads(
             run(
                 ["prime", "eval", "samples", record["evaluation_id"], "--output", "json"],
-                timeout=COLLECT_TIMEOUT_SECONDS,
+                timeout=min(COLLECT_TIMEOUT_SECONDS, remaining),
             )
         )
         samples = payload.get("samples") or []

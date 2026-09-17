@@ -147,6 +147,32 @@ def test_collect_writes_native_episodes(tmp_path: Path, monkeypatch) -> None:
     assert json.loads(written) == {"id": "episode-1", "traces": []}
 
 
+def test_collect_bounds_every_call_by_the_collection_reserve(tmp_path: Path, monkeypatch) -> None:
+    output = tmp_path / "hosted"
+    output.mkdir()
+    runs = {
+        "base/swebench-verified": {"evaluation_id": "id-1", "num_examples": 1},
+        "head/scaleswe": {"evaluation_id": "id-2", "num_examples": 1},
+    }
+    (output / "hosted-runs.json").write_text(json.dumps(runs))
+    sample = {"info": {"native_wrapper": {"id": "episode-1", "traces": []}}}
+    timeouts = []
+
+    def fake_run(command, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        return json.dumps({"samples": [sample]})
+
+    monkeypatch.setattr(hosted_eval, "run", fake_run)
+    args = type("Args", (), {"output": str(output)})()
+    hosted_eval.collect(args)
+    assert len(timeouts) == 2
+    assert all(value and value <= hosted_eval.COLLECT_RESERVE_MINUTES * 60 for value in timeouts)
+
+    monkeypatch.setattr(hosted_eval, "COLLECT_RESERVE_MINUTES", 0)
+    with pytest.raises(RuntimeError, match="exceeded its reserve"):
+        hosted_eval.collect(args)
+
+
 def test_collect_fails_when_a_sample_lacks_the_native_episode(tmp_path: Path, monkeypatch) -> None:
     runs = {"base/swebench-verified": {"evaluation_id": "id-1", "num_examples": 1}}
     output = tmp_path / "hosted"
