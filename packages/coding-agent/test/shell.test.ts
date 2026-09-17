@@ -1,5 +1,5 @@
 import type * as NodeFs from "node:fs";
-import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -53,11 +53,6 @@ async function execCommand(
 		signal: options?.signal,
 	});
 	return { exitCode: result.exitCode, output };
-}
-
-function makeTempDir(prefix: string): string {
-	const dir = mkdtempSync(join(tmpdir(), prefix));
-	return dir;
 }
 
 describe("shell command construction", () => {
@@ -201,12 +196,16 @@ describe("local shell execution", () => {
 	});
 
 	it("runs in a working directory containing spaces and Unicode", async () => {
-		const dir = makeTempDir("prime shell ünïcodë ");
+		const dir = mkdtempSync(join(tmpdir(), "prime shell ünïcodë "));
 		try {
 			const command = isWindows ? "(Get-Location).Path" : "pwd -P";
 			const result = await execCommand(command, dir);
 			expect(result.exitCode).toBe(0);
-			expect(result.output.trim()).toBe(realpathSync(dir));
+			const expected = statSync(dir, { bigint: true });
+			expect(statSync(result.output.trim(), { bigint: true })).toMatchObject({
+				dev: expected.dev,
+				ino: expected.ino,
+			});
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -221,7 +220,7 @@ describe("local shell execution", () => {
 	});
 
 	it("rejects a pre-aborted exec without spawning a child", async () => {
-		const dir = makeTempDir("prime abort ");
+		const dir = mkdtempSync(join(tmpdir(), "prime abort "));
 		const journal = join(dir, "orphan-journal.log");
 		const marker = join(dir, "should-not-exist");
 		const previousJournal = process.env[ORPHAN_PROCESS_JOURNAL_ENV];
