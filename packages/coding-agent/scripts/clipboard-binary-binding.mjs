@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { releasePlatforms } from "../../../scripts/release-platforms.mjs";
+import { releasePlatforms, windowsReleasePlatforms } from "../../../scripts/release-platforms.mjs";
 
 export const clipboardNativePackageByPlatform = {
 	"darwin-arm64": "@mariozechner/clipboard-darwin-arm64",
@@ -11,10 +11,13 @@ export const clipboardNativePackageByPlatform = {
 	"linux-x64-baseline": "@mariozechner/clipboard-linux-x64-gnu",
 	"linux-x64-musl": null,
 	"linux-x64-musl-baseline": null,
+	"windows-x64-baseline": null,
 };
 
+const binaryPlatforms = [...releasePlatforms, ...windowsReleasePlatforms];
+
 export function writeClipboardBinaryBinding(path, platform) {
-	if (!releasePlatforms.includes(platform)) throw new Error(`Unsupported binary platform: ${platform}`);
+	if (!binaryPlatforms.includes(platform)) throw new Error(`Unsupported binary platform: ${platform}`);
 	const packageName = clipboardNativePackageByPlatform[platform];
 	if (packageName === undefined) throw new Error(`Missing clipboard native package mapping: ${platform}`);
 	const binding = packageName ? `require(${JSON.stringify(packageName)})` : "null";

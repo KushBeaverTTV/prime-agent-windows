@@ -459,8 +459,8 @@ export class IpythonKernelProvisioner {
 				);
 			}
 			const snapshotDir = this.options?.snapshotDir;
-			// Always inject an absolute trusted shell (undefined only on win32
-			// without bash, where the runtime's teaching error fires instead).
+			// Always inject an absolute trusted shell (win32 resolves the native
+			// PowerShell and throws if none exists, before the kernel starts).
 			const shellPath = resolveKernelBashShell(this.options?.shellPath);
 			const commandPrefix = this.options?.commandPrefix;
 			const bootstrapCode = buildRlmBootstrapCode(this.options?.pythonSkills);

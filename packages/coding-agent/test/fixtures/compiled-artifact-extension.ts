@@ -1,6 +1,12 @@
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fauxAssistantMessage, fauxToolCall, getApiProvider, registerFauxProvider } from "@earendil-works/pi-ai";
+import {
+	type Context,
+	fauxAssistantMessage,
+	fauxToolCall,
+	getApiProvider,
+	registerFauxProvider,
+} from "@earendil-works/pi-ai";
 import { DefaultResourceLoader, type ExtensionAPI, getAgentDir, initTheme } from "@earendil-works/pi-coding-agent";
 
 export default function artifactExtension(pi: ExtensionAPI): void {
@@ -28,7 +34,7 @@ export default function artifactExtension(pi: ExtensionAPI): void {
 			),
 			fauxAssistantMessage(
 				fauxToolCall("ipython", {
-					code: "print('artifact-python-result', artifact_value * 2)\nprint((await bash('printf artifact-shell-ok')).output)",
+					code: `print('artifact-python-result', artifact_value * 2)\nprint((await bash(${JSON.stringify(process.platform === "win32" ? "Write-Output 'artifact-shell-ok'" : "printf artifact-shell-ok")})).output)`,
 				}),
 				{ stopReason: "toolUse" },
 			),
@@ -40,6 +46,34 @@ export default function artifactExtension(pi: ExtensionAPI): void {
 				return fauxAssistantMessage(JSON.stringify(results));
 			},
 		]);
+	} else if (process.env.PRIME_AGENT_ARTIFACT_CASE === "subagent") {
+		const respond = (context: Context) => {
+			faux.appendResponses([respond]);
+			const userMessages = JSON.stringify(context.messages.filter((message) => message.role === "user"));
+			if (userMessages.includes("windows-child-task")) return fauxAssistantMessage("windows-child-ok");
+			const results = context.messages.filter((message) => message.role === "toolResult");
+			if (results.some((result) => result.isError)) {
+				throw new Error(`Subagent execution failed: ${JSON.stringify(results)}`);
+			}
+			if (results.length === 0) {
+				return fauxAssistantMessage(
+					fauxToolCall("ipython", {
+						code: "artifact_child = await rlm.spawn('windows-child-task', name='windows-child')\nprint(artifact_child.name)",
+					}),
+					{ stopReason: "toolUse" },
+				);
+			}
+			if (results.length === 1) {
+				return fauxAssistantMessage(
+					fauxToolCall("ipython", {
+						code: "artifact_children = await rlm.collect([artifact_child], timeout_ms=30000)\nassert len(artifact_children) == 1\nassert artifact_children[0].settled\nassert artifact_children[0].error is None\nassert 'windows-child-ok' in (artifact_children[0].answer_preview or '')\nprint('artifact-subagent-ok')\nawait rlm.delete_subagent(artifact_child)",
+					}),
+					{ stopReason: "toolUse" },
+				);
+			}
+			return fauxAssistantMessage(JSON.stringify(results));
+		};
+		faux.setResponses([respond]);
 	} else {
 		faux.setResponses([
 			(context) => {

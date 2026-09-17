@@ -7,6 +7,7 @@ import { truncateToVisualLines } from "../../modes/interactive/components/visual
 import { theme } from "../../modes/interactive/theme/theme.js";
 import { spawnHidden, waitForChildProcess } from "../../utils/child-process.js";
 import {
+	getShellCommandArgs,
 	getShellConfig,
 	getShellEnv,
 	killProcessTree,
@@ -72,12 +73,13 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 	return {
 		exec: (command, cwd, { onData, signal, timeout, env }) => {
 			return new Promise((resolve, reject) => {
-				const { shell, args } = getShellConfig(options?.shellPath);
+				signal?.throwIfAborted();
+				const config = getShellConfig(options?.shellPath);
 				if (!existsSync(cwd)) {
 					reject(new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`));
 					return;
 				}
-				const child = spawnHidden(shell, [...args, command], {
+				const child = spawnHidden(config.shell, getShellCommandArgs(config, command), {
 					cwd,
 					detached: process.platform !== "win32",
 					env: env ?? getShellEnv(),

@@ -1,5 +1,6 @@
+import { createRequire } from "node:module";
 import { cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -94,6 +95,32 @@ export function validateBinaryAssets(directory) {
 		if (stat.isDirectory()) for (const name of readdirSync(path)) visit(join(path, name));
 	}
 	visit(directory);
+}
+
+const WINDOWS_KOFFI_TRIPLET = "win32_x64";
+
+export function packWindowsKoffiAssets(destination) {
+	const source = join(root, "node_modules/koffi");
+	const tripletsDir = join(source, "build", "koffi");
+	const target = join(destination, "native", "koffi");
+	rmSync(target, { recursive: true, force: true });
+	cpSync(source, target, {
+		recursive: true,
+		filter: (path) => {
+			if (lstatSync(path).isSymbolicLink()) throw new Error(`Unexpected symlink in koffi package: ${path}`);
+			return dirname(path) !== tripletsDir || basename(path) === WINDOWS_KOFFI_TRIPLET;
+		},
+	});
+}
+
+export function validateWindowsKoffiAssets(directory) {
+	const packageJson = join(directory, "native", "koffi", "package.json");
+	if (!lstatSync(packageJson).isFile()) throw new Error("Missing koffi package.json in Windows binary assets");
+	const addon = join(directory, "native", "koffi", "build", "koffi", WINDOWS_KOFFI_TRIPLET, "koffi.node");
+	if (!lstatSync(addon).isFile()) throw new Error("Missing win32_x64 koffi.node in Windows binary assets");
+	const require = createRequire(join(directory, "package.json"));
+	const koffi = require("./native/koffi");
+	koffi.load("kernel32.dll");
 }
 
 export function setBinaryVersion(directory, version) {

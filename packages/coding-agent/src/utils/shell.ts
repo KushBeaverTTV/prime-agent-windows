@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { delimiter, win32 } from "node:path";
+import { basename, delimiter, win32 } from "node:path";
 import { getBinDir } from "../config.js";
 import { recordOrphanProcessState } from "../core/orphan-process-journal.js";
 import { spawnHidden, spawnSyncHidden } from "./child-process.js";
@@ -54,53 +54,77 @@ function findBashOnPath(): string | null {
 	return null;
 }
 
+// Hardcoded literals: ProgramFiles env vars are ambient attacker-influenceable
+// input, the same trust-laundering class as PATH.
+export function getWindowsPowerShell(): string {
+	const candidates = [
+		// 2. Prefer native PowerShell 7.
+		"C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+		// 3. Fall back to in-box Windows PowerShell.
+		win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+	];
+	const executable = candidates.find((candidate) => existsSync(candidate));
+	if (!executable) {
+		throw new Error("Native PowerShell was not found. Install PowerShell or configure an absolute shellPath.");
+	}
+	return executable;
+}
+
+function shellConfig(shell: string): ShellConfig {
+	const name = basename(shell.replaceAll("\\", "/"));
+	if (/^(?:pwsh|powershell)(?:\.exe)?$/i.test(name)) {
+		return { shell, args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"] };
+	}
+	if (/^cmd(?:\.exe)?$/i.test(name)) {
+		return { shell, args: ["/d", "/s", "/c"] };
+	}
+	return { shell, args: ["-c"] };
+}
+
+export function getShellCommandArgs(config: ShellConfig, command: string): string[] {
+	if (!config.args.includes("-EncodedCommand")) return [...config.args, command];
+	const script = [
+		"$ErrorActionPreference = 'Stop'",
+		"$ProgressPreference = 'SilentlyContinue'",
+		"$utf8 = New-Object System.Text.UTF8Encoding($false)",
+		"[Console]::InputEncoding = $utf8",
+		"[Console]::OutputEncoding = $utf8",
+		"$OutputEncoding = $utf8",
+		"$global:LASTEXITCODE = 0",
+		"try {",
+		"& {",
+		command,
+		"}",
+		"$primeAgentSucceeded = $?",
+		"if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+		"if (-not $primeAgentSucceeded) { exit 1 }",
+		"exit 0",
+		"} catch {",
+		"[Console]::Error.WriteLine($_.ToString())",
+		"exit 1",
+		"}",
+	].join("\n");
+	return [...config.args, Buffer.from(script, "utf16le").toString("base64")];
+}
+
 /**
  * Resolve shell configuration based on platform and an optional explicit shell path.
  * Resolution order:
  * 1. User-specified shellPath
- * 2. On Windows: Git Bash in known locations, then bash on PATH
+ * 2. On Windows: native PowerShell (pwsh, else in-box powershell.exe)
  * 3. On Unix: /bin/bash, then bash on PATH, then fallback to sh
  */
 export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
 		if (existsSync(customShellPath)) {
-			return { shell: customShellPath, args: ["-c"] };
+			return shellConfig(customShellPath);
 		}
 		throw new Error(`Custom shell path not found: ${customShellPath}`);
 	}
 
 	if (process.platform === "win32") {
-		// 2. Try Git Bash in known locations
-		const paths: string[] = [];
-		const programFiles = process.env.ProgramFiles;
-		if (programFiles) {
-			paths.push(`${programFiles}\\Git\\bin\\bash.exe`);
-		}
-		const programFilesX86 = process.env["ProgramFiles(x86)"];
-		if (programFilesX86) {
-			paths.push(`${programFilesX86}\\Git\\bin\\bash.exe`);
-		}
-
-		for (const path of paths) {
-			if (existsSync(path)) {
-				return { shell: path, args: ["-c"] };
-			}
-		}
-
-		// 3. Fallback: search bash.exe on PATH (Cygwin, MSYS2, WSL, etc.)
-		const bashOnPath = findBashOnPath();
-		if (bashOnPath) {
-			return { shell: bashOnPath, args: ["-c"] };
-		}
-
-		throw new Error(
-			`No bash shell found. Options:\n` +
-				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
-				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
-				"  3. Set shellPath in settings.json\n\n" +
-				`Searched Git Bash in:\n${paths.map((p) => `  ${p}`).join("\n")}`,
-		);
+		return shellConfig(getWindowsPowerShell());
 	}
 
 	// Unix: try /bin/bash, then bash on PATH, then fallback to sh
@@ -116,17 +140,13 @@ export function getShellConfig(customShellPath?: string): ShellConfig {
 	return { shell: "sh", args: ["-c"] };
 }
 
-// Hardcoded literals: ProgramFiles env vars are ambient attacker-influenceable
-// input, the same trust-laundering class as PATH.
-const WINDOWS_GIT_BASH_PATHS = ["C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Program Files (x86)\\Git\\bin\\bash.exe"];
-
 /**
  * Absolute default shell for the kernel's bash(): explicit shellPath wins; POSIX
  * uses /bin/bash else /bin/sh (absolute, never PATH — the kernel inherits a
- * user-influenced PATH); win32 uses only the canonical Git Bash install paths,
+ * user-influenced PATH); win32 uses only the native PowerShell install paths,
  * never PATH (a repo-controlled PATH/where.exe must not pick the kernel shell).
- * undefined = no shell found: kernel startup must not fail, bash() raises its
- * teaching error.
+ * A missing PowerShell throws rather than degrading to undefined — Windows
+ * PowerShell ships with the OS, so its absence is a real configuration error.
  */
 export function resolveKernelBashShell(customShellPath?: string): string | undefined {
 	const explicit = customShellPath?.trim();
@@ -136,12 +156,7 @@ export function resolveKernelBashShell(customShellPath?: string): string | undef
 	if (process.platform !== "win32") {
 		return existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh";
 	}
-	for (const path of WINDOWS_GIT_BASH_PATHS) {
-		if (existsSync(path)) {
-			return path;
-		}
-	}
-	return undefined;
+	return getWindowsPowerShell();
 }
 
 export function getShellEnv(): NodeJS.ProcessEnv {
@@ -163,19 +178,23 @@ export function getShellEnv(): NodeJS.ProcessEnv {
 	// ignored even for user `!` commands, so an interactive editor can never receive
 	// keystrokes anyway). A user who wants a prompt in a specific command can override
 	// inline (`GIT_EDITOR=vim git commit`), which takes precedence over exported vars.
+	const isWindows = process.platform === "win32";
+	const windowsFailFast = `"${win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe").replaceAll("\\", "/")}" /d /c exit 1`;
 	return {
 		...process.env,
 		[pathKey]: updatedPath,
-		GIT_EDITOR: "true",
-		GIT_SEQUENCE_EDITOR: "true",
+		GIT_EDITOR: isWindows ? windowsFailFast : "true",
+		GIT_SEQUENCE_EDITOR: isWindows ? windowsFailFast : "true",
 		GIT_TERMINAL_PROMPTS: "0",
-		GIT_ASKPASS: "true",
+		GIT_TERMINAL_PROMPT: "0",
+		GIT_ASKPASS: isWindows ? windowsFailFast : "true",
 		SSH_ASKPASS_REQUIRE: "never",
-		EDITOR: "true",
-		VISUAL: "true",
-		PAGER: "cat",
-		GIT_PAGER: "cat",
+		EDITOR: isWindows ? windowsFailFast : "true",
+		VISUAL: isWindows ? windowsFailFast : "true",
+		PAGER: isWindows ? "" : "cat",
+		GIT_PAGER: isWindows ? "" : "cat",
 		DEBIAN_FRONTEND: "noninteractive",
+		...(isWindows ? { PYTHONUTF8: "1", NoDefaultCurrentDirectoryInExePath: "1" } : {}),
 	};
 }
 
@@ -250,10 +269,14 @@ export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
 		// Use taskkill on Windows to kill process tree
 		try {
-			spawnHidden("taskkill", ["/F", "/T", "/PID", String(pid)], {
-				stdio: "ignore",
-				detached: true,
-			});
+			spawnHidden(
+				win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+				["/F", "/T", "/PID", String(pid)],
+				{
+					stdio: "ignore",
+					detached: true,
+				},
+			);
 		} catch {
 			// Ignore errors if taskkill fails
 		}

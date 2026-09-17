@@ -11,7 +11,10 @@ import {
 	setDefaultTerminalColors,
 } from "./terminal-colors.js";
 
-const cjsRequire = createRequire(import.meta.url);
+const isWindowsBinary = process.platform === "win32" && /\$bunfs|~BUN|%7EBUN/.test(import.meta.url);
+const cjsRequire = createRequire(
+	isWindowsBinary ? path.join(path.dirname(process.execPath), "package.json") : import.meta.url,
+);
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
@@ -362,7 +365,7 @@ export class ProcessTerminal implements Terminal {
 			// Dynamic require to avoid bundling koffi's 74MB of cross-platform
 			// native binaries into every compiled binary. Koffi is only needed
 			// on Windows for VT input support.
-			const koffi = cjsRequire("koffi");
+			const koffi = cjsRequire(isWindowsBinary ? "./native/koffi" : "koffi");
 			const k32 = koffi.load("kernel32.dll");
 			const GetStdHandle = k32.func("void* __stdcall GetStdHandle(int)");
 			const GetConsoleMode = k32.func("bool __stdcall GetConsoleMode(void*, _Out_ uint32_t*)");

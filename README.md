@@ -49,6 +49,25 @@ Install the latest stable release on macOS or Linux:
 curl --proto '=https' --proto-redir '=https' -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
 ```
 
+### Windows
+
+A native Windows build of the same terminal application is maintained in the [prime-agent-windows fork](https://github.com/KushBeaverTTV/prime-agent-windows). It supports Windows 10/11 on x64 only (not ARM64), runs the existing terminal UI (no separate GUI), and does not require WSL, Git Bash, Node.js, or Bun on `PATH`.
+
+From the [latest fork release](https://github.com/KushBeaverTTV/prime-agent-windows/releases/latest), download `prime-agent-<version>-windows-x64-baseline-<revision>.zip`, `install-windows.ps1`, and `SHA256SUMS` into one directory. Verify the archive hash against `SHA256SUMS`, then install from PowerShell:
+
+```powershell
+powershell -NoProfile -File .\install-windows.ps1 -ArchivePath .\prime-agent-<version>-windows-x64-baseline-<revision>.zip -Sha256 <sha256> -ManifestUrl https://github.com/KushBeaverTTV/prime-agent-windows/releases/latest/download/windows.json
+```
+
+The installer performs side-by-side immutable releases under `%LOCALAPPDATA%\Programs\PrimeAgentWindows` with atomic activation and a retained rollback release. Start the agent with `%LOCALAPPDATA%\Programs\PrimeAgentWindows\prime-agent.cmd`, then run `/login` on first launch.
+
+```powershell
+prime-agent.cmd update              # Update to the newest Windows release
+prime-agent.cmd update --rollback   # Roll back to the previous release
+```
+
+The build is not code-signed: unsigned PowerShell scripts require an execution policy that allows them, and the unsigned executable may trigger SmartScreen. The installer never changes execution policy or other system settings. The agent runtime and built-in tools are native; third-party extensions that depend on Linux-only tools keep their own platform requirements. Windows releases are produced from reviewed merges of upstream into the fork; upstream updates flow through the Windows CI and are not applied automatically.
+
 ## Why Prime Agent
 
 Prime Agent combines a persistent Python control environment with durable harness state, so useful working context and reusable operating patterns can outlive a single chat window.

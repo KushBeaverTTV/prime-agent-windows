@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
 import functools
 import json
 import os
@@ -308,7 +309,7 @@ class BashHandle:
             self._proc: subprocess.Popen[bytes] | _winjob.JobProcess
             if _IS_POSIX:
                 self._proc = subprocess.Popen(
-                    [_shell(), "-c", script],
+                    _shell_argv(script),
                     cwd=os.getcwd(),
                     env=_child_env(),
                     stdout=subprocess.PIPE,
@@ -318,7 +319,7 @@ class BashHandle:
                 )
             else:
                 self._proc = _winjob.spawn_in_job(
-                    self._job, [_shell(), "-c", script], cwd=os.getcwd(), env=_child_env()
+                    self._job, _shell_argv(script), cwd=os.getcwd(), env=_child_env()
                 )
         except BaseException:
             for fd in (self._status_read, self._wake_read, self._wake_write):
@@ -967,16 +968,56 @@ def _shell() -> str:
         return override
     if not _IS_POSIX:
         # Never consult PATH on Windows: a repo-controlled PATH could supply
-        # the shell. The host injects PRIME_AGENT_BASH_SHELL when one exists.
+        # the shell, and a POSIX shell is only ever an explicit injected
+        # override -- never discovered, never WSL.
+        for candidate in (
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            _system32("WindowsPowerShell", "v1.0", "powershell.exe"),
+        ):
+            if os.path.isfile(candidate):
+                return candidate
         raise RuntimeError(
-            "bash() needs PRIME_AGENT_BASH_SHELL set to the absolute path of a "
-            "POSIX shell on Windows (e.g. install Git Bash in its default "
-            "location so the host injects it)"
+            "bash() needs a native PowerShell on Windows; install PowerShell or "
+            "set PRIME_AGENT_BASH_SHELL to an absolute shell path"
         )
     # PATH fallback only serves bare/standalone POSIX runtime use: the host
     # always injects PRIME_AGENT_BASH_SHELL (an absolute path) when a shell exists.
     shell = shutil.which("bash")
     return shell or "/bin/sh"
+
+
+def _shell_argv(command: str) -> list[str]:
+    shell = _shell()
+    name = os.path.basename(shell).lower()
+    if name in ("pwsh", "pwsh.exe", "powershell", "powershell.exe"):
+        script = "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                "$ProgressPreference = 'SilentlyContinue'",
+                "$utf8 = New-Object System.Text.UTF8Encoding($false)",
+                "[Console]::InputEncoding = $utf8",
+                "[Console]::OutputEncoding = $utf8",
+                "$OutputEncoding = $utf8",
+                "$global:LASTEXITCODE = 0",
+                "try {",
+                "& {",
+                command,
+                "}",
+                "$primeAgentSucceeded = $?",
+                "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+                "if (-not $primeAgentSucceeded) { exit 1 }",
+                "exit 0",
+                "} catch {",
+                "[Console]::Error.WriteLine($_.ToString())",
+                "exit 1",
+                "}",
+            ]
+        )
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        return [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
+    if name in ("cmd", "cmd.exe"):
+        return [shell, "/d", "/s", "/c", command]
+    return [shell, "-c", command]
 
 
 def _with_prefix(command: str) -> str:
@@ -1027,23 +1068,45 @@ def _child_env() -> dict[str, str]:
     per-command inline assignment (`GIT_EDITOR=vim git commit`) still wins
     because it replaces the exported value for that command.
     """
-    return {
+    env = {
         **os.environ,
         "NO_COLOR": "1",
         "TERM": "dumb",
         "CLICOLOR": "0",
         "FORCE_COLOR": "0",
-        "GIT_EDITOR": "true",
-        "GIT_SEQUENCE_EDITOR": "true",
         "GIT_TERMINAL_PROMPTS": "0",
-        "GIT_ASKPASS": "true",
+        "GIT_TERMINAL_PROMPT": "0",
         "SSH_ASKPASS_REQUIRE": "never",
-        "EDITOR": "true",
-        "VISUAL": "true",
-        "PAGER": "cat",
-        "GIT_PAGER": "cat",
         "DEBIAN_FRONTEND": "noninteractive",
     }
+    if _IS_POSIX:
+        env.update(
+            {
+                "GIT_EDITOR": "true",
+                "GIT_SEQUENCE_EDITOR": "true",
+                "GIT_ASKPASS": "true",
+                "EDITOR": "true",
+                "VISUAL": "true",
+                "PAGER": "cat",
+                "GIT_PAGER": "cat",
+            }
+        )
+    else:
+        fail_fast = f'"{_system32("cmd.exe").replace(chr(92), "/")}" /d /c exit 1'
+        env.update(
+            {
+                "GIT_EDITOR": fail_fast,
+                "GIT_SEQUENCE_EDITOR": fail_fast,
+                "GIT_ASKPASS": fail_fast,
+                "EDITOR": fail_fast,
+                "VISUAL": fail_fast,
+                "PAGER": "",
+                "GIT_PAGER": "",
+                "PYTHONUTF8": "1",
+                "NoDefaultCurrentDirectoryInExePath": "1",
+            }
+        )
+    return env
 
 
 def _signal_group(pid: int, sig: int) -> bool:

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { isBunBinary } from "../config.js";
 import { getNativeInstallation } from "../utils/native-installation.js";
+import { getWindowsInstallation } from "../utils/windows-installation.js";
 
 export interface CliSubprocessLaunchSpec {
 	command: string;
@@ -9,6 +10,10 @@ export interface CliSubprocessLaunchSpec {
 }
 
 export function createUpdatedCliSubprocessLaunchSpec(args: readonly string[]): CliSubprocessLaunchSpec {
+	if (isBunBinary && process.platform === "win32") {
+		const installation = getWindowsInstallation();
+		if (installation) return { command: installation.executable, args: [...args] };
+	}
 	const native = isBunBinary ? getNativeInstallation() : undefined;
 	return native ? { command: native.launcher, args: [...args] } : createCliSubprocessLaunchSpec(args);
 }

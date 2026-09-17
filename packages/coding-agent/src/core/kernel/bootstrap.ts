@@ -71,7 +71,10 @@ export function buildBatchShimInvocation(
 	};
 }
 
-const UV_INSTALL_COMMAND = "curl -LsSf https://astral.sh/uv/install.sh | sh";
+const UV_INSTALL_COMMAND =
+	process.platform === "win32"
+		? "winget install --id astral-sh.uv --exact"
+		: "curl -LsSf https://astral.sh/uv/install.sh | sh";
 /** MCP discovery surface the kernel runtime must expose for /plugins work. */
 const REQUIRED_MCP_DISCOVERY_METHODS = [
 	"list_plugins",
@@ -556,6 +559,13 @@ async function ensureUv(options: EnsureKernelPythonOptions): Promise<string> {
 
 	const localUv = path.join(os.homedir(), ".local", "bin", process.platform === "win32" ? "uv.exe" : "uv");
 	if (await isExecutable(localUv)) return localUv;
+
+	if (process.platform === "win32") {
+		throw new Error(
+			`uv is required to set up the Python kernel. Install uv yourself: ${UV_INSTALL_COMMAND}, ` +
+				"then re-run prime-agent.",
+		);
+	}
 
 	const shouldInstallUv =
 		process.env.PRIME_AGENT_INSTALL_UV === "1" || (!options.onProgress && (await confirmUvInstall()));

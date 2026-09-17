@@ -22,6 +22,8 @@ export const releasePlatforms = [
 	"linux-x64-musl-baseline",
 ];
 
+export const windowsReleasePlatforms = ["windows-x64-baseline"];
+
 // The v1 manifest field stays limited to the original platform schema.
 // The v2 field uses releasePlatforms so current clients can select every
 // supported archive without changing the v1 compatibility contract.

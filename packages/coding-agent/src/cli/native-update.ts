@@ -13,6 +13,7 @@ import {
 	isReleaseUpdateCandidate,
 	type UpdateChannel,
 } from "../utils/version-check.js";
+import { getWindowsUpdatePlan } from "./windows-update.js";
 
 /** The release manifest for the requested channel could not be resolved; the installed version was kept. */
 export class NativeReleaseUnavailableError extends Error {
@@ -40,6 +41,7 @@ export async function getNativeUpdatePlan(options: {
 	channel?: UpdateChannel;
 	executable?: string;
 }): Promise<NativeUpdatePlan> {
+	if (process.platform === "win32") return getWindowsUpdatePlan(options);
 	const current = getNativeInstallationTarget(options.executable);
 	if (!current)
 		throw new Error(

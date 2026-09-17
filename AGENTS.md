@@ -264,3 +264,24 @@ git pull --rebase && git push
 ### User override
 
 If the user instructions conflict with rules set out here, ask for confirmation that they want to override the rules. Only then execute their instructions.
+
+## Native Windows Port Exception (user-authorized)
+
+For the native Windows port (shell/runtime and standalone packaging/updates), the user authorized running native Windows builds and tests for the whole port; all other command restrictions stand unchanged.
+
+- `cd packages/coding-agent; node ../../node_modules/tsx/dist/cli.mjs ../../node_modules/vitest/dist/cli.js --run test/shell.test.ts test/windows-installation.test.ts test/windows-update.test.ts`
+- `$env:PYTHONPATH = "<repo>\prime-agent-runtime\src"; & "C:\Users\antho\.prime\agent\kernel-venv\Scripts\python.exe" scripts\test-windows-runtime.py`
+- `powershell -NoProfile -File scripts\build-windows-release.ps1` builds the `windows-x64-baseline` package under `artifacts\windows`
+- `powershell -NoProfile -File scripts\test-windows-install.ps1 -ArchivePath <zip> -Sha256 <sha256>` exercises the installer against an isolated install root
+- `node node_modules/tsx/dist/cli.mjs scripts/test-windows-artifact.ts --binary-dir packages/coding-agent/binaries/windows-x64-baseline --uv <uv.exe>` runs the compiled-artifact integration checks
+
+Windows release maintenance:
+
+- The Windows fork is remote `windows` (`https://github.com/KushBeaverTTV/prime-agent-windows`); upstream is `origin`. Port work lives on branch `windows-native`.
+- Upstream sync is a reviewed merge from `origin/main` into the Windows branch; unresolved conflicts block the release. Never install raw upstream packages.
+- Create release tag `windows-v<upstreamVersion>-r<revision>` only after port review; the native CI workflow validates the tag before publishing. No automatic unreviewed merge or release script.
+
+Known `npm run check` baseline limitations on native Windows:
+
+- `check:installer` requires a POSIX `sh` harness (`spawnSync("sh", ...)`) and fails when none is installed.
+- `check:test-policy` resolves its diff base to `HEAD^` when `origin/main` == `HEAD`, so already-committed violations appear. To check only current worktree changes, set the env var in the invoking PowerShell session for that single invocation: `$env:TEST_POLICY_BASE='HEAD'; node scripts/check-test-policy.mjs`. This is a per-invocation scope, not a global override or policy weakening.

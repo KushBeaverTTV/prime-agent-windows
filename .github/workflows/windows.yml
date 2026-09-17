@@ -1,0 +1,110 @@
+name: Windows Native Release
+on:
+  pull_request:
+    branches: [windows-native]
+  push:
+    tags: ['windows-v*']
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Windows port revision
+        type: number
+        required: true
+        default: 1
+permissions:
+  contents: read
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.18.0'
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.4.0'
+          no-cache: true
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
+        with:
+          version: '0.11.7'
+          enable-cache: false
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Typecheck and test policy
+        run: |
+          & .\node_modules\.bin\tsgo.cmd --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $base = git merge-base HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:TEST_POLICY_BASE = $base
+          node scripts/check-test-policy.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run check:browser-smoke
+      - name: Native shell and update unit tests
+        working-directory: packages/coding-agent
+        run: node ../../node_modules/tsx/dist/cli.mjs ../../node_modules/vitest/dist/cli.js --run test/shell.test.ts test/windows-installation.test.ts test/windows-update.test.ts
+      - name: Native Python process tests
+        run: |
+          uv sync --locked --project prime-agent-runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\prime-agent-runtime\.venv\Scripts\python.exe scripts/test-windows-runtime.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Windows archive
+        env:
+          RELEASE_REF: ${{ github.ref_name }}
+          PORT_REVISION: ${{ inputs.revision || 1 }}
+        run: |
+          $revision = [int]$env:PORT_REVISION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            if ($env:RELEASE_REF -notmatch '^windows-v(\d+\.\d+\.\d+)-r(\d+)$') { throw 'Invalid Windows release tag' }
+            $version = (Get-Content packages/coding-agent/package.json -Raw | ConvertFrom-Json).version
+            if ($Matches[1] -ne $version) { throw 'Tag version does not match package version' }
+            $revision = [int]$Matches[2]
+          }
+          powershell -NoProfile -File scripts/build-windows-release.ps1 -Revision $revision
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows installer and rollback checks
+        run: |
+          $manifest = Get-Content artifacts/windows/windows.json -Raw | ConvertFrom-Json
+          powershell -NoProfile -File scripts/test-windows-install.ps1 -ArchivePath (Join-Path artifacts/windows $manifest.file) -Sha256 $manifest.sha256
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Packaged runtime integration checks
+        run: node node_modules/tsx/dist/cli.mjs scripts/test-windows-artifact.ts --binary-dir packages/coding-agent/binaries/windows-x64-baseline --uv (Get-Command uv).Source
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: prime-agent-windows
+          path: artifacts/windows/
+          if-no-files-found: error
+  publish:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/windows-v') && github.repository == 'KushBeaverTTV/prime-agent-windows'
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: prime-agent-windows
+          path: release
+      - name: Publish validated Windows release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $manifest = Get-Content release/windows.json -Raw | ConvertFrom-Json
+          $archive = Join-Path release $manifest.file
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $manifest.sha256) { throw 'Release checksum mismatch' }
+          gh release create $env:RELEASE_TAG $archive release/windows.json release/SHA256SUMS release/install-windows.ps1 --repo $env:GITHUB_REPOSITORY --verify-tag --latest --title "Prime Agent Windows $($manifest.version) r$($manifest.revision)" --notes 'Native Windows x64 terminal application. No WSL or Linux runtime required. Unsigned build. Windows PowerShell, uv and network access are needed for initial Python setup. Updates use this fork; application updates retain a rollback release. Third-party extensions retain their own platform requirements.'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
