@@ -9,36 +9,11 @@ export interface ShellConfig {
 	args: string[];
 }
 
-/** System32\bash.exe is the WSL launcher (runs Linux-side), so %SystemRoot% matches are only a last resort. */
-export function orderWindowsBashCandidates(matches: readonly string[], systemRoot: string | undefined): string[] {
-	if (!systemRoot) return [...matches];
-	const prefix = win32.join(systemRoot, "\\").toLowerCase();
-	const underSystemRoot = (match: string) => win32.normalize(match).toLowerCase().startsWith(prefix);
-	return [...matches.filter((match) => !underSystemRoot(match)), ...matches.filter(underSystemRoot)];
-}
-
 /**
- * Find bash executable on PATH (cross-platform)
+ * Find bash executable on PATH (POSIX only; Windows never reaches this —
+ * win32 returns the native PowerShell config before this call site).
  */
 function findBashOnPath(): string | null {
-	if (process.platform === "win32") {
-		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
-		try {
-			const result = spawnSyncHidden("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000 });
-			if (result.status === 0 && result.stdout) {
-				const matches = result.stdout.trim().split(/\r?\n/).filter(Boolean);
-				for (const match of orderWindowsBashCandidates(matches, process.env.SystemRoot)) {
-					if (existsSync(match)) {
-						return match;
-					}
-				}
-			}
-		} catch {
-			// Ignore errors
-		}
-		return null;
-	}
-
 	// Unix: Use 'which' and trust its output (handles Termux and special filesystems)
 	try {
 		const result = spawnSyncHidden("which", ["bash"], { encoding: "utf-8", timeout: 5000 });

@@ -422,7 +422,9 @@ function run(command: string, args: string[], options: { stdio?: "ignore" | "inh
 		// CPython must read UTF-8 .pth files even under a Windows legacy code page.
 		const env = { ...process.env, ...(process.platform === "win32" ? { PYTHONUTF8: "1" } : {}) };
 		const batch = isBatchShim(command) ? buildBatchShimInvocation(command, args, env) : undefined;
-		const child = spawnHidden(batch ? (process.env.ComSpec ?? "cmd.exe") : command, batch?.args ?? args, {
+		// Absolute System32 cmd.exe: a process env can carry a planted ComSpec.
+		const comspec = path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe");
+		const child = spawnHidden(batch ? comspec : command, batch?.args ?? args, {
 			env: batch?.env ?? env,
 			stdio: options.stdio ?? "ignore",
 			...(batch ? { windowsVerbatimArguments: true } : {}),

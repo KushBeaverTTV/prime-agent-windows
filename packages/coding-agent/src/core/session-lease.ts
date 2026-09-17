@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { lockSync } from "proper-lockfile";
 import { execFileSyncHidden, isProcessAlive } from "../utils/child-process.js";
 
@@ -131,7 +131,16 @@ export function getWindowsProcessStartId(pid: number, query: ProcessQuery = runP
 		return undefined;
 	}
 	try {
-		const startTicks = query("powershell.exe", [
+		// Absolute in-box path: PATH could resolve a planted powershell.exe that
+		// forges process-start identities and defeats PID-reuse protection.
+		const powershell = win32.join(
+			process.env.SystemRoot ?? "C:\\Windows",
+			"System32",
+			"WindowsPowerShell",
+			"v1.0",
+			"powershell.exe",
+		);
+		const startTicks = query(powershell, [
 			"-NoLogo",
 			"-NoProfile",
 			"-NonInteractive",

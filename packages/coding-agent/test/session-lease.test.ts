@@ -44,9 +44,12 @@ describe("session leases", () => {
 		});
 
 		expect(processStartId).toBe("win:638880485801234567");
+		expect(calls.length).toBe(1);
+		expect(calls[0]!.command.toLowerCase().endsWith("\\powershell.exe")).toBe(true);
+		expect(calls[0]!.command).not.toBe("powershell.exe");
 		expect(calls).toEqual([
 			{
-				command: "powershell.exe",
+				command: calls[0]!.command,
 				args: [
 					"-NoLogo",
 					"-NoProfile",
