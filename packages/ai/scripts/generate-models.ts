@@ -1816,15 +1816,21 @@ async function generateModels() {
 		}
 	}
 
-	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
+	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M3"]);
+	// Verified against MiniMax's direct endpoint docs; models.dev fills the rest.
+	const minimaxDirectLimits: Record<string, { contextWindow: number; maxTokens: number }> = {
+		"MiniMax-M2.7": { contextWindow: 204800, maxTokens: 131072 },
+		"MiniMax-M2.7-highspeed": { contextWindow: 204800, maxTokens: 131072 },
+		"MiniMax-M3": { contextWindow: 1000000, maxTokens: 512000 },
+	};
 
 	for (const candidate of allModels) {
-		if (
-			(candidate.provider === "minimax" || candidate.provider === "minimax-cn") &&
-			minimaxDirectSupportedIds.has(candidate.id)
-		) {
-			candidate.contextWindow = 204800;
-			candidate.maxTokens = 131072;
+		if (candidate.provider === "minimax" || candidate.provider === "minimax-cn") {
+			const limits = minimaxDirectLimits[candidate.id];
+			if (limits) {
+				candidate.contextWindow = limits.contextWindow;
+				candidate.maxTokens = limits.maxTokens;
+			}
 		}
 	}
 

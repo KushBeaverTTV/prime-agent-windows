@@ -1,0 +1,1 @@
+- Added MiniMax-M3 to the direct MiniMax and MiniMax (China) providers (1M context, image input), and refreshed the generated model catalog.

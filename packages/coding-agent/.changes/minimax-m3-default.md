@@ -1,0 +1,1 @@
+- Changed the default MiniMax and MiniMax (China) model to MiniMax-M3.
