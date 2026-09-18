@@ -171,7 +171,14 @@ describe("session leases", () => {
 		const sessionPath = join(agentDir, "session.jsonl");
 		const aliasPath = join(agentDir, "session-alias.jsonl");
 		writeFileSync(sessionPath, "");
-		symlinkSync(sessionPath, aliasPath);
+		try {
+			symlinkSync(sessionPath, aliasPath);
+		} catch (error) {
+			// Windows without Developer Mode / SeCreateSymbolicLinkPrivilege
+			// cannot create symlinks (EPERM) — skip, don't fail.
+			if ((error as NodeJS.ErrnoException)?.code === "EPERM") return;
+			throw error;
+		}
 		const first = acquireSessionLease(sessionPath, agentDir, enabledEnvironment("resident-a"));
 
 		expect(() => acquireSessionLease(aliasPath, agentDir, enabledEnvironment("owned-b"))).toThrow(
