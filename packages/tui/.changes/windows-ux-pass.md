@@ -1,0 +1,1 @@
+- Added `TUI.onActionLink` so components can intercept `prime-agent-action://` hyperlinks before they reach the OS opener.

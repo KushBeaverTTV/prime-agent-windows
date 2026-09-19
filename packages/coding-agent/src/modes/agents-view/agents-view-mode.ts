@@ -24,6 +24,7 @@ import {
 	parseSlashCommand,
 	resolveBuiltinSlashCommandName,
 } from "../../core/slash-commands.js";
+import { formatUsd } from "../../utils/format.js";
 import { canonicalizePath } from "../../utils/paths.js";
 import { ensureTool } from "../../utils/tools-manager.js";
 import { DaemonAgentConnection } from "../agent-connection/daemon-agent-connection.js";
@@ -113,7 +114,10 @@ const STATUS_MESSAGE_DURATION_MS = 4500;
 const SEARCH_PROMPT_PLACEHOLDER = "Search sessions";
 const REPLY_PROMPT_FALLBACK_PLACEHOLDER = "Write a reply to this agent";
 const RESUME_PROMPT_PLACEHOLDER = "Write a prompt to resume this session";
-const STATUS_ROW_ICON = "•";
+const IDLE_ROW_ICON = "□";
+const INACTIVE_ROW_ICON = "·";
+const AGENTS_ACTION_LINK_PREFIX = "prime-agent-action://agents/";
+const HAZARD_STRIPE = "▚";
 const SELECTED_ROW_MARKER = "\0agents-view-selected-row\0";
 const CODE_ROW_MARKER = "\0agents-view-code-row\0";
 
@@ -249,6 +253,41 @@ export function combineAgentsViewStartupNotices(...notices: readonly (string | u
 
 export function shouldReconnectAgentsViewDaemon(reason: DaemonClosingReason | undefined): boolean {
 	return reason !== "shutdown";
+}
+
+export type AgentsViewDestructiveAction = "stop" | "delete";
+
+/** Chip verb for the armed row: STOP when it still has live work, DELETE otherwise. */
+export function resolveAgentsViewDestructiveAction(
+	row: AgentsViewRow | undefined,
+): AgentsViewDestructiveAction | undefined {
+	if (!row?.selectable || (row.kind !== "agent" && row.kind !== "subagent")) return undefined;
+	return hasLiveWork(row) ? "stop" : "delete";
+}
+
+/** KV-line TOTAL: recursive cost summed over top-level agent rows only. */
+export function sumAgentsViewTotalCost(rows: readonly AgentsViewRow[]): number {
+	let total = 0;
+	for (const row of rows) {
+		if (row.kind === "agent" && row.depth === 0) total += row.recursiveCost;
+	}
+	return total;
+}
+
+export function formatAgentsViewKvLine(pairs: readonly { key: string; value: string }[]): string {
+	return pairs
+		.map((pair) => `${theme.fg("accent", pair.key.toUpperCase())} ${theme.fg("text", pair.value)}`)
+		.join(theme.fg("borderMuted", "  //  "));
+}
+
+/** One accent-filled row: ` ▌ <title> ` left, hazard stripes and the version filling the right quarter. */
+export function formatAgentsViewSlabHeader(title: string, version: string, width: number): string {
+	const safeWidth = Math.max(1, width);
+	const right = ` ${version} `;
+	const stripeWidth = Math.max(0, Math.floor(safeWidth / 4) - visibleWidth(right));
+	const label = truncateToWidth(` ▌ ${title} `, Math.max(0, safeWidth - stripeWidth - visibleWidth(right)), "");
+	const gap = " ".repeat(Math.max(0, safeWidth - visibleWidth(label) - stripeWidth - visibleWidth(right)));
+	return theme.bg("accent", theme.fg("bg", `${label}${gap}${HAZARD_STRIPE.repeat(stripeWidth)}${right}`));
 }
 
 export function createAgentsViewReplyHeadline(text: string | undefined): string | undefined {
@@ -752,6 +791,7 @@ export class AgentsViewMode implements Component, Focusable {
 		initTheme(options.uiServices.settingsManager.getTheme(), true);
 
 		this.ui = new TUI(new ProcessTerminal(), options.uiServices.settingsManager.getShowHardwareCursor());
+		this.ui.onActionLink = (url) => this.handleActionLink(url);
 		this.ui.setClearOnShrink(options.uiServices.settingsManager.getClearOnShrink());
 		this.ui.terminal.setTitle(`${APP_TITLE} - Agents`);
 		this.editor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
@@ -789,34 +829,7 @@ export class AgentsViewMode implements Component, Focusable {
 		this.editor.onCtrlD = () => {
 			this.finish({ type: "exit" });
 		};
-		this.editor.onAgentsBack = () => {
-			if (this.replyTarget) {
-				this.setReplyTarget(undefined);
-				return true;
-			}
-			if (this.editor.getText().length > 0) return false;
-			const ancestors = this.scopeKey
-				? getUnifiedSessionAncestorSessionIds(this.unifiedRecords, this.scopeKey, this.unifiedIndex)
-				: [];
-			const scopeRoot = this.scopeRootSummary;
-			const result = resolveAgentsViewLeftResult(
-				scopeRoot,
-				ancestors,
-				this.persistentState.scopeFrames?.at(-1)?.returnChat,
-			);
-			if (result && scopeRoot) {
-				this.finish({
-					...result,
-					hasChildren: hasUnifiedSessionChildren(
-						this.unifiedRecords,
-						getAgentsViewSelectionKey(scopeRoot),
-						this.unifiedIndex,
-					),
-				});
-			}
-			// Global view has no hierarchy parent: consume Left without opening chat.
-			return true;
-		};
+		this.editor.onAgentsBack = () => this.navigateBack();
 		this.editor.onEscape = () => {
 			if (this.replyTarget) {
 				this.setReplyTarget(undefined);
@@ -878,7 +891,7 @@ export class AgentsViewMode implements Component, Focusable {
 		this.ui.enterFullscreen({
 			scroll: [this],
 			dock: this.fullscreenDock,
-			mouse: false,
+			mouse: this.options?.uiServices?.settingsManager?.getFullscreenMouse?.() ?? false,
 			viewportControls: false,
 		});
 		const startupStatusMessage = this.persistentState.statusMessage;
@@ -1009,17 +1022,12 @@ export class AgentsViewMode implements Component, Focusable {
 		if (height <= 0) {
 			return [];
 		}
-		const headerLines = this.splash.render(width);
+		const headerLines = [this.renderSlabHeader(width), ...this.splash.render(width)];
 		const noticeLines = this.renderStartupNotices(width);
 		if (noticeLines.length > 0) {
 			headerLines.push("", ...noticeLines);
 		}
-		const root = this.scopeRootSummary;
-		if (root) {
-			const scopeLabel = `${keyText("app.agents.back")} back · ${getAgentsViewSessionTitle(root)} › subagents`;
-			headerLines.push("", truncateToWidth(theme.fg("dim", scopeLabel), width));
-		}
-		headerLines.push("");
+		headerLines.push(this.renderKvLine(width), "");
 
 		// The prompt belongs to the scroll pane rather than the fullscreen dock, but
 		// it must remain usable when a short viewport or wrapped notices exhaust the
@@ -1059,6 +1067,27 @@ export class AgentsViewMode implements Component, Focusable {
 				this.ui.requestRender();
 			})
 			.catch(() => {});
+	}
+
+	private renderSlabHeader(width: number): string {
+		const root = this.scopeRootSummary;
+		const appLabel = APP_TITLE.toUpperCase().replace(/-/g, " ");
+		const title = root
+			? `${appLabel}  //  ${getAgentsViewSessionTitle(root).toUpperCase()} › SUBAGENTS`
+			: `${appLabel}  //  SESSIONS`;
+		return formatAgentsViewSlabHeader(title, VERSION, width);
+	}
+
+	private renderKvLine(width: number): string {
+		const counts = countRowsBySection(this.rows);
+		return truncateToWidth(
+			formatAgentsViewKvLine([
+				{ key: "SESSIONS", value: String(counts.running + counts.idle + counts.inactive) },
+				{ key: "RUNNING", value: String(counts.running) },
+				{ key: "TOTAL", value: formatUsd(sumAgentsViewTotalCost(this.rows)) },
+			]),
+			width,
+		);
 	}
 
 	private renderStartupNotices(width: number): string[] {
@@ -1391,6 +1420,66 @@ export class AgentsViewMode implements Component, Focusable {
 
 	private getSavedSessionCatalogContext(): DaemonSavedSessionCatalogContext {
 		return { cwd: this.getSavedSessionCwd(), sessionDir: this.options.config.sessionDir };
+	}
+
+	private navigateBack(): boolean {
+		if (this.replyTarget) {
+			this.setReplyTarget(undefined);
+			return true;
+		}
+		if (this.editor.getText().length > 0) return false;
+		const ancestors = this.scopeKey
+			? getUnifiedSessionAncestorSessionIds(this.unifiedRecords, this.scopeKey, this.unifiedIndex)
+			: [];
+		const scopeRoot = this.scopeRootSummary;
+		const result = resolveAgentsViewLeftResult(
+			scopeRoot,
+			ancestors,
+			this.persistentState.scopeFrames?.at(-1)?.returnChat,
+		);
+		if (result && scopeRoot) {
+			this.finish({
+				...result,
+				hasChildren: hasUnifiedSessionChildren(
+					this.unifiedRecords,
+					getAgentsViewSelectionKey(scopeRoot),
+					this.unifiedIndex,
+				),
+			});
+		}
+		// Global view has no hierarchy parent: consume Left without opening chat.
+		return true;
+	}
+
+	/** Clicked `prime-agent-action://agents/<action>` chips route to the same handlers the keys use. */
+	private handleActionLink(url: URL): void {
+		if (url.host !== "agents") return;
+		switch (url.pathname.replace(/^\/+/, "")) {
+			case "navigate-up":
+				this.moveSelection(-1);
+				break;
+			case "navigate-down":
+				this.moveSelection(1);
+				break;
+			case "open":
+				this.openSelected();
+				break;
+			case "back":
+				this.navigateBack();
+				break;
+			case "reply":
+				if (!this.renameTarget) void this.toggleReplyTarget();
+				break;
+			case "new":
+				if (!this.replyTarget && !this.renameTarget) void this.createNewSession();
+				break;
+			case "rename":
+				if (!this.replyTarget && !this.renameTarget) this.enterRenameMode();
+				break;
+			case "delete":
+				if (!this.replyTarget && !this.renameTarget) void this.handleDeleteSelected();
+				break;
+		}
 	}
 
 	private openSelected(): void {
@@ -2397,6 +2486,7 @@ export class AgentsViewMode implements Component, Focusable {
 		this.clearCtrlCExitHint({ render: false });
 		this.clearDeleteConfirmation({ render: false });
 		this.setStatusMessage(undefined, { render: false });
+		this.ui.onActionLink = undefined;
 		this.ui.stop({
 			preserveAltScreen: result.type !== "exit",
 			flushFullscreen: false,
@@ -2542,15 +2632,29 @@ export class AgentsViewMode implements Component, Focusable {
 		const lines = displayItems.slice(sliceStart, sliceStart + contentRows).map((item) => {
 			if (item.type === "spacer") return "";
 			if (item.type === "heading") {
-				return theme.fg("muted", truncateToWidth(`${sectionTitle(item.section)} (${counts[item.section]})`, width));
+				return theme.fg(
+					this.sectionHeadingColor(item.section),
+					truncateToWidth(`▌ ${sectionTitle(item.section).toUpperCase()} (${counts[item.section]})`, width),
+				);
 			}
 			return this.renderRow(item.row, width, layout);
 		});
 		if (showLeadingEllipsis) lines.unshift(theme.fg("dim", "  ..."));
 		if (showTrailingEllipsis) lines.push(theme.fg("dim", "  ..."));
 		if (headerRows > 1) lines.unshift("");
-		if (headerRows > 0) lines.unshift(theme.bold(layout.legend));
+		if (headerRows > 0) lines.unshift(theme.fg("dim", layout.legend));
 		return lines;
+	}
+
+	private sectionHeadingColor(section: AgentsViewSection): "accent" | "warning" | "dim" {
+		switch (section) {
+			case "running":
+				return "accent";
+			case "idle":
+				return "warning";
+			case "inactive":
+				return "dim";
+		}
 	}
 
 	private renderRow(
@@ -2627,8 +2731,10 @@ export class AgentsViewMode implements Component, Focusable {
 		}
 		// Truncating styled cells embeds full \x1b[0m resets; re-open the
 		// selection background after each so the highlight spans the whole row.
+		// The accent notch takes the first column of the already-padded line.
 		const applySelectionBg = theme.getSelectionBackgroundColor();
-		return padded.split("\x1b[0m").map(applySelectionBg).join("\x1b[0m");
+		const body = padded.split("\x1b[0m").map(applySelectionBg).join("\x1b[0m");
+		return theme.fg("accent", "▌") + truncateToWidth(body, width - 1);
 	}
 
 	private isPendingDeleteRow(row: AgentsViewRow): boolean {
@@ -2663,41 +2769,112 @@ export class AgentsViewMode implements Component, Focusable {
 
 	private renderDock(width: number): string[] {
 		const safeWidth = Math.max(1, width);
-		return [this.renderHints(safeWidth)].map((line) => this.finalizeRenderedLine(line, safeWidth));
+		return [this.renderActionBar(safeWidth)].map((line) => this.finalizeRenderedLine(line, safeWidth));
 	}
 
-	private renderHints(width: number): string {
+	private renderActionBar(width: number): string {
 		if (this.isCtrlCExitHintVisible()) {
 			const clearKey = keyText("app.clear");
-			const hint = clearKey ? `Press ${clearKey} again to exit` : "Press again to exit";
-			return truncateToWidth(theme.fg("muted", hint), width);
+			const hint = clearKey ? `PRESS ${clearKey.toUpperCase()} AGAIN TO EXIT` : "PRESS AGAIN TO EXIT";
+			return this.renderActionToast(hint, "warning", width);
+		}
+		const pending = this.pendingConfirmation();
+		if (pending) {
+			const deleteKey = keyText("app.agents.delete").toUpperCase();
+			const cancelKey = keyText("tui.select.cancel").toUpperCase();
+			return this.renderActionToast(
+				`PRESS ${deleteKey} AGAIN TO ${pending.verb} "${pending.title}"  //  ${cancelKey} CANCEL`,
+				"error",
+				width,
+			);
 		}
 		if (this.statusMessage) {
-			return truncateToWidth(theme.fg(this.statusMessageTone, this.statusMessage), width);
+			return this.renderActionToast(this.statusMessage, this.statusMessageTone, width);
 		}
 		if (this.renameTarget) {
-			const hint = `${keyText("tui.select.confirm")} save   ${keyText("tui.select.cancel")} cancel`;
-			return truncateToWidth(theme.fg("muted", hint), width);
+			return truncateToWidth(
+				[
+					this.plainChip(keyText("tui.select.confirm"), "SAVE"),
+					this.plainChip(keyText("tui.select.cancel"), "CANCEL"),
+				].join("  "),
+				width,
+			);
 		}
 		if (this.replyTarget) {
-			return truncateToWidth(theme.fg("muted", this.renderReplyComposerHints()), width);
+			return truncateToWidth(this.renderReplyComposerChips(), width);
 		}
+		return truncateToWidth(this.renderNavigationChips(), width);
+	}
+
+	/** The armed delete/stop confirmation, rendered as the action-bar toast. */
+	private pendingConfirmation(): { verb: string; title: string } | undefined {
+		if (!this.isDeleteConfirmationVisible()) return undefined;
+		if (this.pendingDeleteAgent) {
+			return { verb: "DELETE", title: getAgentsViewSessionTitle(this.pendingDeleteAgent.summary) };
+		}
+		if (this.pendingKillSubagent) {
+			const row = this.rows[this.selectedIndex];
+			return {
+				verb: row && hasLiveWork(row) ? "STOP" : "DELETE",
+				title: row ? getAgentsViewSessionTitle(row.summary) : "subagent",
+			};
+		}
+		return undefined;
+	}
+
+	private renderActionToast(message: string, tone: "muted" | "warning" | "error", width: number): string {
+		const fill = tone === "muted" ? "accent" : tone;
+		return truncateToWidth(`${theme.fg("text", "▌")}${theme.bg(fill, theme.fg("bg", ` ${message} `))}`, width);
+	}
+
+	private actionCap(cap: string): string {
+		return theme.bg("accent", theme.fg("bg", ` ${cap} `));
+	}
+
+	private actionLink(action: string, rendered: string): string {
+		return `\x1b]8;;${AGENTS_ACTION_LINK_PREFIX}${action}\x07${rendered}\x1b]8;;\x07`;
+	}
+
+	private actionChip(action: string, cap: string, label: string): string {
+		return this.actionLink(action, `${this.actionCap(cap)}${theme.fg("text", ` ${label}`)}`);
+	}
+
+	private plainChip(cap: string, label: string): string {
+		return `${this.actionCap(cap)}${theme.fg("text", ` ${label}`)}`;
+	}
+
+	private canReplyToRow(row: AgentsViewRow | undefined): boolean {
+		return (
+			row?.kind === "agent" && (row.summary.activeSessionId !== undefined || row.summary.sessionFile !== undefined)
+		);
+	}
+
+	private canRenameRow(row: AgentsViewRow | undefined): boolean {
+		return this.canReplyToRow(row) && row?.selectable === true;
+	}
+
+	private renderNavigationChips(): string {
 		const selected = this.rows[this.selectedIndex];
 		// Enter and Right both toggle the list on a summary row and open everywhere
 		// else; Left only has a parent scope to return to below the root view.
-		const rightAction = selected?.kind === "subagent-summary" ? (selected.expanded ? "collapse" : "expand") : "open";
-		const hints = [
-			`${keyText("tui.select.up")}/${keyText("tui.select.down")} navigate`,
-			`${keyText("tui.select.confirm")}/${keyText("app.agents.open")} ${rightAction}`,
-			this.scopeRootSummary ? `${keyText("app.agents.back")} parent` : undefined,
-			`${keyText("app.agents.new")} new`,
-		]
-			.filter((hint): hint is string => hint !== undefined)
-			.join("   ");
-		return truncateToWidth(theme.fg("muted", hints), width);
+		const openLabel = selected?.kind === "subagent-summary" ? (selected.expanded ? "COLLAPSE" : "EXPAND") : "OPEN";
+		const destructive = resolveAgentsViewDestructiveAction(selected);
+		const chips = [
+			`${this.actionLink("navigate-up", this.actionCap(keyText("tui.select.up")))} ${this.actionLink(
+				"navigate-down",
+				this.actionCap(keyText("tui.select.down")),
+			)}${theme.fg("text", " NAVIGATE")}`,
+			this.actionChip("open", `${keyText("tui.select.confirm")}/${keyText("app.agents.open")}`, openLabel),
+			this.scopeRootSummary ? this.actionChip("back", keyText("app.agents.back"), "PARENT") : undefined,
+			this.canReplyToRow(selected) ? this.actionChip("reply", keyText("app.agents.reply"), "REPLY") : undefined,
+			this.actionChip("new", keyText("app.agents.new"), "NEW"),
+			this.canRenameRow(selected) ? this.actionChip("rename", keyText("app.agents.rename"), "RENAME") : undefined,
+			destructive ? this.actionChip("delete", keyText("app.agents.delete"), destructive.toUpperCase()) : undefined,
+		];
+		return chips.filter((chip): chip is string => chip !== undefined).join("  ");
 	}
 
-	private renderReplyComposerHints(): string {
+	private renderReplyComposerChips(): string {
 		const target = this.replyTarget!;
 		const current = resolveCurrentReplyTargetSummary(this.unifiedRecords ?? [], target, (activeSessionId) =>
 			this.findSummaryByActiveSessionId(activeSessionId),
@@ -2705,12 +2882,15 @@ export class AgentsViewMode implements Component, Focusable {
 		const streaming = current.activeSessionId !== undefined && current.isStreaming;
 		const hasText = this.editor.getText().trim().length > 0;
 		return [
-			`${keyText("tui.select.confirm")} ${streaming ? "steer" : current.activeSessionId ? "send" : "resume & send"}`,
-			hasText ? `${keyText("app.message.followUp")} queue` : undefined,
-			`${keyText("tui.select.cancel")} cancel`,
+			this.plainChip(
+				keyText("tui.select.confirm"),
+				streaming ? "STEER" : current.activeSessionId ? "SEND" : "RESUME & SEND",
+			),
+			hasText ? this.plainChip(keyText("app.message.followUp"), "QUEUE") : undefined,
+			this.plainChip(keyText("tui.select.cancel"), "CANCEL"),
 		]
-			.filter((hint): hint is string => hint !== undefined)
-			.join("   ");
+			.filter((chip): chip is string => chip !== undefined)
+			.join("  ");
 	}
 
 	private visibleListRows(): number {
@@ -2733,8 +2913,9 @@ export class AgentsViewMode implements Component, Focusable {
 			case "running":
 				return workingIconFrame(this.workingIconFrame);
 			case "idle":
+				return IDLE_ROW_ICON;
 			case "inactive":
-				return STATUS_ROW_ICON;
+				return INACTIVE_ROW_ICON;
 			default: {
 				const _exhaustive: never = section;
 				return _exhaustive;
@@ -2745,11 +2926,11 @@ export class AgentsViewMode implements Component, Focusable {
 	private formatRowIcon(section: AgentsViewSection, icon: string): string {
 		switch (section) {
 			case "running":
-				return theme.bold(icon);
+				return theme.fg("accent", icon);
 			case "idle":
-				return theme.bold(theme.fg("warning", icon));
+				return theme.fg("warning", icon);
 			case "inactive":
-				return theme.bold(theme.fg("dim", icon));
+				return theme.fg("dim", icon);
 			default: {
 				const _exhaustive: never = section;
 				return _exhaustive;
@@ -2814,7 +2995,7 @@ export function buildCompactAgentsViewLayout(rows: readonly AgentsViewRow[], wid
 	const sessions = rows.filter((row) => row.kind === "agent" || row.kind === "subagent");
 	const entries = sessions.map((row) => ({
 		identity: row.identity,
-		cost: `$${row.recursiveCost.toFixed(2)}`,
+		cost: formatUsd(row.recursiveCost),
 		age: formatSessionDuration(row.summary),
 	}));
 	const costWidth = entries.reduce((size, entry) => Math.max(size, visibleWidth(entry.cost)), 4);
@@ -2826,9 +3007,9 @@ export function buildCompactAgentsViewLayout(rows: readonly AgentsViewRow[], wid
 	const nameWidth = Math.min(28, Math.max(0, available - modelWidth));
 	const activityWidth = Math.max(0, available - modelWidth - nameWidth - 2);
 	const detailLine = (cost: string, age: string) => `${padCellStart(cost, costWidth)}  ${padCellStart(age, ageWidth)}`;
-	const headings = [formatTableCell("Session", nameWidth), formatTableCell("Model", modelWidth)];
-	if (activityWidth > 0) headings.push(formatTableCell("Activity", activityWidth));
-	headings.push(detailLine("Cost", "Age"));
+	const headings = [formatTableCell("SESSION", nameWidth), formatTableCell("MODEL", modelWidth)];
+	if (activityWidth > 0) headings.push(formatTableCell("ACTIVITY", activityWidth));
+	headings.push(detailLine("COST", "AGE"));
 	return {
 		legend: formatTableCell(headings.join("  "), width),
 		details: new Map(entries.map((entry) => [entry.identity, detailLine(entry.cost, entry.age)])),

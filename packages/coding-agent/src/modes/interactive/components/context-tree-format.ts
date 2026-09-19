@@ -3,6 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ContextTreeNode } from "../../../core/context-tree.js";
 import type { ContextUsage } from "../../../core/extensions/index.js";
 import { addAssistantUsage, emptyUsage } from "../../../core/usage.js";
+import { formatUsd } from "../../../utils/format.js";
 import { formatTokenCount } from "../agent-activity.js";
 import { theme } from "../theme/theme.js";
 
@@ -51,10 +52,6 @@ function flattenContextTree(root: ContextTreeNode): ContextTreeRow[] {
 /** Spend-relevant token count, matching the "Total" line of /usage. */
 function spentTokens(usage: Usage): number {
 	return usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-}
-
-function formatCost(cost: number): string {
-	return `$${cost.toFixed(2)}`;
 }
 
 function formatContextColumn(contextUsage: ContextUsage | undefined, withBar: boolean): string {
@@ -113,7 +110,7 @@ export function formatContextTree(root: ContextTreeNode, width: number): string 
 	const rows = flattenContextTree(root);
 
 	const tokenCells = rows.map((row) => formatTokenCount(spentTokens(row.node.ownUsage)));
-	const costCells = rows.map((row) => formatCost(row.node.ownUsage.cost.total));
+	const costCells = rows.map((row) => formatUsd(row.node.ownUsage.cost.total));
 	const tokenHeader = "tokens";
 	const costHeader = "cost";
 	const contextHeader = "context";
@@ -159,7 +156,7 @@ export function formatContextTree(root: ContextTreeNode, width: number): string 
 	const agentCount = countNodes(root);
 	lines.push("");
 	lines.push(
-		`${theme.fg("dim", "Total:")} ${formatTokenCount(spentTokens(totals))} tokens ${theme.fg("dim", "·")} ${formatCost(
+		`${theme.fg("dim", "Total:")} ${formatTokenCount(spentTokens(totals))} tokens ${theme.fg("dim", "·")} ${formatUsd(
 			totals.cost.total,
 		)}${agentCount > 1 ? theme.fg("dim", ` across ${agentCount} agents`) : ""}`,
 	);
@@ -179,7 +176,7 @@ export function formatContextTree(root: ContextTreeNode, width: number): string 
 	if (totals.cost.total > 0) {
 		lines.push("");
 		lines.push("Cost");
-		lines.push(`${theme.fg("dim", "Total:")} $${totals.cost.total.toFixed(4)}`);
+		lines.push(`${theme.fg("dim", "Total:")} ${formatUsd(totals.cost.total, 4)}`);
 	}
 
 	const rootContext = root.contextUsage;

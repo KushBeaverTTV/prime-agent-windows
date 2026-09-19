@@ -1398,6 +1398,13 @@ export class InteractiveMode {
 			// session's spend to the new chat.
 			getCostUsd: () =>
 				this.topBarCost.sessionId === this.connectionState?.sessionId ? this.topBarCost.total : undefined,
+			getModelLabel: () => {
+				const model = this.getCurrentModel();
+				if (!model) return undefined;
+				const prefix = `${model.provider}/`;
+				const shortId = model.id.startsWith(prefix) ? model.id.slice(prefix.length) : model.id;
+				return `${model.provider}/${shortId}`;
+			},
 		});
 		this.chatContainer = new Container();
 		this.shortcutGuideContainer = new Container();

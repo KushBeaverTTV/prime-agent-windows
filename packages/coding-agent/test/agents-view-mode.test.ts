@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { setKeybindings } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +11,9 @@ import {
 	AgentsViewMode,
 	type AgentsViewPersistentState,
 	createInitialAgentsViewPersistentState,
+	resolveAgentsViewDestructiveAction,
 	runAgentsViewMode,
+	sumAgentsViewTotalCost,
 } from "../src/modes/agents-view/agents-view-mode.js";
 import * as agentsViewState from "../src/modes/agents-view/agents-view-state.js";
 import {
@@ -24,6 +27,7 @@ import * as savedSessionCatalog from "../src/modes/daemon/saved-session-catalog.
 import type { InteractiveModeUiServices } from "../src/modes/interactive/interactive-mode-services.js";
 import { initTheme, stopThemeWatcher } from "../src/modes/interactive/theme/theme.js";
 import { WORKING_ICON_INTERVAL_MS } from "../src/modes/interactive/theme/working-icon.js";
+import { canonicalizePath } from "../src/utils/paths.js";
 
 const modeMocks = vi.hoisted(() => ({
 	interactiveRun: vi.fn<() => Promise<never>>(),
@@ -1185,8 +1189,10 @@ describe("agents view reply delivery on inactive sessions", () => {
 		};
 	}
 
+	const savedFile = "/tmp/sessions/saved-1.jsonl";
+	const savedFileIdentity = `file:${resolve(canonicalizePath(savedFile))}`;
 	const savedSummary = replySummary({
-		sessionFile: "/tmp/sessions/saved-1.jsonl",
+		sessionFile: savedFile,
 		cwd: process.cwd(),
 		summary: "Persisted recap text",
 		firstMessage: "opener",
@@ -1196,9 +1202,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 		const requestRender = vi.fn();
 		const handleCtrlC = vi.fn();
 		const self: Record<string, unknown> = {
-			rows: [
-				{ kind: "agent", selectable: true, identity: "file:/tmp/sessions/saved-1.jsonl", summary: savedSummary },
-			],
+			rows: [{ kind: "agent", selectable: true, identity: savedFileIdentity, summary: savedSummary }],
 			selectedIndex: 0,
 			pendingDeleteAgent: undefined,
 			replyTarget: undefined,
@@ -1233,7 +1237,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 			options: { config: { cwd: process.cwd() } },
 			requireClient: () => ({ request }),
 			findSummaryByActiveSessionId: () => undefined,
-			inactiveAgentIdentities: new Set(["file:/tmp/sessions/saved-1.jsonl"]),
+			inactiveAgentIdentities: new Set([savedFileIdentity]),
 			setStatusMessage,
 			selectSummary: vi.fn(),
 			sendPrompt: vi.fn(async () => {}),
@@ -1304,7 +1308,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 			// Stale pre-resume rows do not know the resumed session; scheduling must
 			// come from the resume response instead.
 			findSummaryByActiveSessionId: () => undefined,
-			inactiveAgentIdentities: new Set(["file:/tmp/sessions/saved-1.jsonl"]),
+			inactiveAgentIdentities: new Set([savedFileIdentity]),
 			setStatusMessage: vi.fn(),
 			setReplyTarget: vi.fn(),
 			refreshSessions: vi.fn(async () => true),
@@ -1319,7 +1323,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 		);
 		expect(self.sendPrompt).toHaveBeenCalledWith("active-9", "wake up", "steer");
 		expect(self.selectSummary).toHaveBeenCalledWith(expect.objectContaining({ activeSessionId: "active-9" }));
-		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
+		expect(self.inactiveAgentIdentities).not.toContain(savedFileIdentity);
 		expect(self.setReplyTarget).not.toHaveBeenCalled();
 	});
 
@@ -1346,7 +1350,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 			options: { config: { cwd: process.cwd() } },
 			requireClient: () => ({ request }),
 			findSummaryByActiveSessionId: () => undefined,
-			inactiveAgentIdentities: new Set(["file:/tmp/sessions/saved-1.jsonl"]),
+			inactiveAgentIdentities: new Set([savedFileIdentity]),
 			replyTarget: target,
 			setStatusMessage: vi.fn(),
 			selectSummary,
@@ -1366,7 +1370,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 		expect(selectSummary).not.toHaveBeenCalled();
 		expect(selection.activeSessionId).toBe("active-2");
 		expect(sendPrompt).toHaveBeenCalledWith("active-9", "wake up", undefined);
-		expect(self.inactiveAgentIdentities).not.toContain("file:/tmp/sessions/saved-1.jsonl");
+		expect(self.inactiveAgentIdentities).not.toContain(savedFileIdentity);
 	});
 
 	it("preserves a replacement composer when an older reply succeeds", async () => {
@@ -1431,7 +1435,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 	] as const)("handles $name", async ({ failure, replacement, remainsInactive }) => {
 		const editor = editorWithText("wake up");
 		const target = { key: "saved-1", summary: savedSummary };
-		const inactiveAgentIdentities = new Set(["file:/tmp/sessions/saved-1.jsonl"]);
+		const inactiveAgentIdentities = new Set([savedFileIdentity]);
 		const request = vi.fn(async () => {
 			if (failure === "resume") throw new Error("resume failed");
 			return {
@@ -1471,7 +1475,7 @@ describe("agents view reply delivery on inactive sessions", () => {
 		expect(self.setReplyTarget).not.toHaveBeenCalled();
 		expect(editor.setText).toHaveBeenNthCalledWith(1, "");
 		expect(editor.getText()).toBe(replacement ?? "wake up");
-		expect(inactiveAgentIdentities.has("file:/tmp/sessions/saved-1.jsonl")).toBe(remainsInactive);
+		expect(inactiveAgentIdentities.has(savedFileIdentity)).toBe(remainsInactive);
 		expect(self.refreshSessions).toHaveBeenCalledTimes(remainsInactive ? 0 : 1);
 		if (!remainsInactive) {
 			expect(self.refreshSessions).toHaveBeenCalledWith();
@@ -1495,8 +1499,8 @@ describe("agents view reply delivery on inactive sessions", () => {
 			unifiedRecords: [
 				{
 					daemon: currentSaved,
-					identity: "file:/tmp/sessions/saved-1.jsonl",
-					identityAliases: ["file:/tmp/sessions/saved-1.jsonl"],
+					identity: savedFileIdentity,
+					identityAliases: [savedFileIdentity],
 					section: "inactive",
 					searchableText: "",
 				},
@@ -1599,9 +1603,9 @@ describe("agents view reply delivery on inactive sessions", () => {
 	});
 
 	it("re-resolves the armed target before dispatching a view command", async () => {
-		const stale = replySummary({ sessionFile: "/tmp/sessions/saved-1.jsonl" });
+		const stale = replySummary({ sessionFile: savedFile });
 		const liveNow = replySummary({
-			sessionFile: "/tmp/sessions/saved-1.jsonl",
+			sessionFile: savedFile,
 			activeSessionId: "active-9",
 			lifecycle: "live",
 		});
@@ -1612,8 +1616,8 @@ describe("agents view reply delivery on inactive sessions", () => {
 			unifiedRecords: [
 				{
 					daemon: liveNow,
-					identity: "file:/tmp/sessions/saved-1.jsonl",
-					identityAliases: ["file:/tmp/sessions/saved-1.jsonl"],
+					identity: savedFileIdentity,
+					identityAliases: [savedFileIdentity],
 					section: "idle",
 					searchableText: "",
 				},
@@ -1629,5 +1633,123 @@ describe("agents view reply delivery on inactive sessions", () => {
 			{ name: "kill", args: "" },
 			expect.objectContaining({ activeSessionId: "active-9" }),
 		);
+	});
+
+	it("picks STOP for rows with live work and DELETE otherwise", () => {
+		const row = (overrides: Partial<AgentsViewRow> = {}): AgentsViewRow => ({
+			kind: "agent",
+			section: "idle",
+			summary: summary(),
+			title: "",
+			subtitle: "",
+			statusLabel: "",
+			depth: 0,
+			selectable: true,
+			runningSubagentCount: 0,
+			recursiveCost: 0,
+			descendantCount: 0,
+			identity: "row-1",
+			...overrides,
+		});
+		expect(resolveAgentsViewDestructiveAction(row({ section: "running" }))).toBe("stop");
+		expect(resolveAgentsViewDestructiveAction(row({ runningSubagentCount: 1 }))).toBe("stop");
+		expect(resolveAgentsViewDestructiveAction(row())).toBe("delete");
+		expect(resolveAgentsViewDestructiveAction(row({ kind: "subagent" }))).toBe("delete");
+		expect(resolveAgentsViewDestructiveAction(row({ kind: "subagent-summary" }))).toBeUndefined();
+		expect(resolveAgentsViewDestructiveAction(row({ selectable: false }))).toBeUndefined();
+		expect(resolveAgentsViewDestructiveAction(undefined)).toBeUndefined();
+	});
+
+	it("sums TOTAL over depth-0 agent rows only", () => {
+		const row = (kind: AgentsViewRow["kind"], depth: number, recursiveCost: number): AgentsViewRow => ({
+			kind,
+			section: "idle",
+			summary: summary(),
+			title: "",
+			subtitle: "",
+			statusLabel: "",
+			depth,
+			selectable: true,
+			runningSubagentCount: 0,
+			recursiveCost,
+			descendantCount: 0,
+			identity: `${kind}-${depth}-${recursiveCost}`,
+		});
+		expect(
+			sumAgentsViewTotalCost([row("agent", 0, 2), row("subagent", 1, 3), row("agent", 0, 4), row("agent", 1, 5)]),
+		).toBe(6);
+	});
+
+	it("renders the contextual STOP or DELETE chip and action links in the action bar", () => {
+		const view = new AgentsViewMode(
+			{ config: {}, uiServices: createUiServices() },
+			createInitialAgentsViewPersistentState({}),
+		);
+		try {
+			Reflect.set(view, "rows", [
+				{
+					kind: "agent",
+					section: "running",
+					summary: summary(),
+					title: "",
+					subtitle: "",
+					statusLabel: "",
+					depth: 0,
+					selectable: true,
+					runningSubagentCount: 0,
+					recursiveCost: 0,
+					descendantCount: 0,
+					identity: "row-1",
+				} satisfies AgentsViewRow,
+			]);
+			Reflect.set(view, "selectedIndex", 0);
+			const running = invoke("renderActionBar", view, 160) as string;
+			expect(stripAnsi(running)).toContain("STOP");
+			expect(stripAnsi(running)).not.toContain("DELETE");
+			expect(running).toContain("prime-agent-action://agents/delete");
+
+			Reflect.set(view, "rows", [
+				{
+					kind: "agent",
+					section: "idle",
+					summary: summary(),
+					title: "",
+					subtitle: "",
+					statusLabel: "",
+					depth: 0,
+					selectable: true,
+					runningSubagentCount: 0,
+					recursiveCost: 0,
+					descendantCount: 0,
+					identity: "row-1",
+				} satisfies AgentsViewRow,
+			]);
+			const idle = stripAnsi(invoke("renderActionBar", view, 160) as string);
+			expect(idle).toContain("DELETE");
+			expect(idle).not.toContain("STOP");
+		} finally {
+			stopThemeWatcher();
+		}
+	});
+
+	it("dispatches action links through the same handlers as the keys", () => {
+		const view = new AgentsViewMode(
+			{ config: {}, uiServices: createUiServices() },
+			createInitialAgentsViewPersistentState({}),
+		);
+		try {
+			const move = vi.fn();
+			const del = vi.fn(async () => undefined);
+			Reflect.set(view, "moveSelection", move);
+			Reflect.set(view, "handleDeleteSelected", del);
+			invoke("handleActionLink", view, new URL("prime-agent-action://agents/navigate-down"));
+			expect(move).toHaveBeenCalledWith(1);
+			invoke("handleActionLink", view, new URL("prime-agent-action://agents/delete"));
+			expect(del).toHaveBeenCalledOnce();
+			invoke("handleActionLink", view, new URL("https://example.com/agents/delete"));
+			expect(del).toHaveBeenCalledOnce();
+		} finally {
+			stopThemeWatcher();
+		}
 	});
 });

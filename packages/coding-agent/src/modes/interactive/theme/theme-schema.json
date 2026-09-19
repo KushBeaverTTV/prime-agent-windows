@@ -92,6 +92,10 @@
 				"bashMode"
 			],
 			"properties": {
+				"bg": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Text-on-fill color for slab headers, chips and toasts (defaults to userMessageBg)"
+				},
 				"accent": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Primary accent color (logo, selected items, cursor)"

@@ -77,6 +77,7 @@ export function validateBinaryAssets(directory) {
 		"prime-agent-runtime/pyproject.toml",
 		"prime-agent-runtime/src/rlm/repl.py",
 		"theme/prime.json",
+		"theme/cornerstone.json",
 		"theme/dark.json",
 		"theme/light.json",
 		"export-html/template.html",

@@ -12,6 +12,7 @@ import {
 	type Rgb,
 	rgbTo256,
 	type SelectListTheme,
+	type SettingsListTheme,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { type Static, type TProperties, Type } from "typebox";
@@ -19,6 +20,7 @@ import type { Validator } from "typebox/compile";
 import { getCustomThemesDir, getThemesDir } from "../../../config.js";
 import type { SourceInfo } from "../../../core/source-info.js";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.js";
+import type * as CodeHighlighterModuleNs from "./code-highlighter.js";
 
 // ============================================================================
 // Types & Schema
@@ -37,6 +39,8 @@ const ThemeJsonSchema = Type.Object({
 	vars: Type.Optional(Type.Record(Type.String(), ColorValueSchema)),
 	colors: Type.Object({
 		// Core UI (10 colors)
+		// Text-on-fill color for slab headers/chips/toasts; defaults to userMessageBg.
+		bg: Type.Optional(ColorValueSchema),
 		accent: ColorValueSchema,
 		border: ColorValueSchema,
 		borderAccent: ColorValueSchema,
@@ -128,6 +132,7 @@ export function preloadThemeValidator(): Promise<void> {
 }
 
 export type ThemeColor =
+	| "bg"
 	| "accent"
 	| "border"
 	| "borderAccent"
@@ -386,6 +391,7 @@ export class Theme {
 	readonly sourcePath?: string;
 	sourceInfo?: SourceInfo;
 	private fgColors: Map<ThemeColor, string>;
+	private fgColorValues: Map<ThemeColor, string | number>;
 	private bgColors: Map<ThemeBg, string>;
 	private bgColorValues: Map<ThemeBg, string | number>;
 	private mode: ColorMode;
@@ -402,8 +408,14 @@ export class Theme {
 		this.sourceInfo = options.sourceInfo;
 		this.mode = mode;
 		this.fgColors = new Map();
-		for (const [key, value] of Object.entries(refinementColors(options.name === "light"))) {
-			this.fgColors.set(key as RefinementColor, fgAnsi(value, mode));
+		this.fgColorValues = new Map(
+			Object.entries(refinementColors(options.name === "light")) as [ThemeColor, string | number][],
+		);
+		for (const [key, value] of this.fgColorValues) {
+			this.fgColors.set(key, fgAnsi(value, mode));
+		}
+		for (const [key, value] of Object.entries(fgColors) as [ThemeColor, string | number][]) {
+			this.fgColorValues.set(key, value);
 		}
 		for (const [key, value] of Object.entries(fgColors) as [ThemeColor, string | number][]) {
 			this.fgColors.set(key, fgAnsi(value, mode));
@@ -421,10 +433,20 @@ export class Theme {
 		return `${ansi}${text}\x1b[39m`; // Reset only foreground color
 	}
 
-	bg(color: ThemeBg, text: string): string {
-		const ansi = this.bgColors.get(color);
-		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
+	/**
+	 * ThemeBg fills come from the `bgColors` palette; a ThemeColor is also
+	 * accepted and is painted using its palette value as the fill — this is
+	 * how slab headers, key-cap chips, and toasts get their accent fill.
+	 */
+	bg(color: ThemeBg | ThemeColor, text: string): string {
+		const ansi = this.bgColors.get(color as ThemeBg) ?? this.foregroundAsBgAnsi(color as ThemeColor);
 		return `${ansi}${text}\x1b[49m`; // Reset only background color
+	}
+
+	private foregroundAsBgAnsi(color: ThemeColor): string {
+		const value = this.fgColorValues.get(color);
+		if (value === undefined) throw new Error(`Unknown theme color: ${color}`);
+		return bgAnsi(value, this.mode);
 	}
 
 	/** Active color depth (truecolor vs 256color). */
@@ -664,10 +686,12 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 	if (!BUILTIN_THEMES) {
 		const themesDir = getThemesDir();
 		const primePath = path.join(themesDir, "prime.json");
+		const cornerstonePath = path.join(themesDir, "cornerstone.json");
 		const darkPath = path.join(themesDir, "dark.json");
 		const lightPath = path.join(themesDir, "light.json");
 		BUILTIN_THEMES = {
 			prime: JSON.parse(fs.readFileSync(primePath, "utf-8")) as ThemeJson,
+			cornerstone: JSON.parse(fs.readFileSync(cornerstonePath, "utf-8")) as ThemeJson,
 			dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")) as ThemeJson,
 			light: JSON.parse(fs.readFileSync(lightPath, "utf-8")) as ThemeJson,
 		};
@@ -822,6 +846,7 @@ function createTheme(themeJson: ThemeJson, mode?: ColorMode, sourcePath?: string
 		{
 			...refinementColors(themeJson.name === "light"),
 			...themeJson.colors,
+			bg: themeJson.colors.bg ?? themeJson.colors.userMessageBg,
 			mdBody: themeJson.colors.mdBody ?? themeJson.colors.text,
 		},
 		themeJson.vars,
@@ -880,8 +905,9 @@ function detectTerminalBackground(): "dark" | "light" {
 }
 
 function getDefaultTheme(): string {
-	// Prime brand is dark-first; only fall back to light when the terminal is light.
-	return detectTerminalBackground() === "light" ? "light" : "prime";
+	if (detectTerminalBackground() === "light") return "light";
+	// The Windows distribution ships Cornerstone as its brand theme.
+	return process.platform === "win32" ? "cornerstone" : "prime";
 }
 
 // ============================================================================
@@ -939,7 +965,7 @@ export function setRegisteredThemes(themes: Theme[]): void {
 	}
 }
 
-type CodeHighlighterModule = typeof import("./code-highlighter.js");
+type CodeHighlighterModule = typeof CodeHighlighterModuleNs;
 let codeHighlighter: CodeHighlighterModule | undefined;
 let codeHighlighterPromise: Promise<void> | undefined;
 
@@ -1020,12 +1046,7 @@ function startThemeWatcher(): void {
 	stopThemeWatcher();
 
 	// Only watch if it's a custom theme (not built-in)
-	if (
-		!currentThemeName ||
-		currentThemeName === "prime" ||
-		currentThemeName === "dark" ||
-		currentThemeName === "light"
-	) {
+	if (!currentThemeName || currentThemeName in getBuiltinThemes()) {
 		return;
 	}
 
@@ -1425,7 +1446,7 @@ export function getEditorTheme(): EditorTheme {
 	};
 }
 
-export function getSettingsListTheme(): import("@earendil-works/pi-tui").SettingsListTheme {
+export function getSettingsListTheme(): SettingsListTheme {
 	return {
 		label: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : text),
 		value: (text: string, selected: boolean) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),

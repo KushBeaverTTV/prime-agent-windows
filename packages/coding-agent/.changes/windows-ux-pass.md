@@ -1,0 +1,5 @@
+- Added live model pricing to the model registry so cost displays track current provider prices.
+- Added the built-in `cornerstone` theme and made it the default theme on Windows.
+- Restyled the agents view with a slab header, session totals, and a clickable action bar with contextual STOP/DELETE actions and confirmation toasts.
+- Restyled the interactive top bar as a slab showing the chat name, current model, and session cost.
+- Added Desktop shortcuts and icons to the Windows installer for Prime Agent and the agents dashboard.
