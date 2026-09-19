@@ -43,6 +43,8 @@ if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
 
 Copy-Item -LiteralPath (Join-Path $root 'install-windows.ps1') -Destination (Join-Path $binaryDir 'install-windows.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $root 'prime-agent.ps1') -Destination (Join-Path $binaryDir 'prime-agent.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $root 'assets\windows\prime-agent.ico') -Destination (Join-Path $binaryDir 'prime-agent.ico') -Force
+Copy-Item -LiteralPath (Join-Path $root 'assets\windows\prime-agent-dashboard.ico') -Destination (Join-Path $binaryDir 'prime-agent-dashboard.ico') -Force
 
 $commit = (& git -C $root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'git rev-parse HEAD failed' }

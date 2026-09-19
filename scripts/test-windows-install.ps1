@@ -89,7 +89,7 @@ function Hash-Of([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-$envBefore = @{ PRIME_AGENT_WINDOWS_INSTALL_DIR = $env:PRIME_AGENT_WINDOWS_INSTALL_DIR; PRIME_AGENT_LAUNCHER_PATH = $env:PRIME_AGENT_LAUNCHER_PATH }
+$envBefore = @{ PRIME_AGENT_WINDOWS_INSTALL_DIR = $env:PRIME_AGENT_WINDOWS_INSTALL_DIR; PRIME_AGENT_LAUNCHER_PATH = $env:PRIME_AGENT_LAUNCHER_PATH; PRIME_AGENT_WINDOWS_DESKTOP_DIR = $env:PRIME_AGENT_WINDOWS_DESKTOP_DIR }
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("prime-install-test-{0}" -f [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
@@ -97,8 +97,16 @@ $root = Join-Path $work 'install root ünïcodé'
 New-Item -ItemType Directory -Path $root | Out-Null
 $root2 = Join-Path $work 'second root'
 New-Item -ItemType Directory -Path $root2 | Out-Null
+$desktop = Join-Path $work 'desktop'
+New-Item -ItemType Directory -Path $desktop | Out-Null
+
+function Read-Shortcut([string]$LinkPath) {
+    $shell = New-Object -ComObject WScript.Shell
+    return $shell.CreateShortcut($LinkPath)
+}
 
 try {
+    $env:PRIME_AGENT_WINDOWS_DESKTOP_DIR = $desktop
     $result = Invoke-Installer @('-ArchivePath', $ArchivePath, '-Sha256', $Sha256, '-InstallDir', $root)
     Record 'initial install exits zero' ($result.Code -eq 0)
     $state = Read-State $root
@@ -119,6 +127,16 @@ try {
     Record 'cmd launcher --help exits zero with usage' ($helpResult.Code -eq 0 -and $helpResult.Text -match 'Usage')
     $ps1VersionResult = Invoke-Ps1Launcher $root @('--version')
     Record "ps1 launcher --version reports $baseVersion" ($ps1VersionResult.Code -eq 0 -and $ps1VersionResult.Text.Trim() -eq $baseVersion)
+
+    Record 'prime-agent.ico copied to install root' (Test-Path -LiteralPath (Join-Path $root 'prime-agent.ico') -PathType Leaf)
+    Record 'prime-agent-dashboard.ico copied to install root' (Test-Path -LiteralPath (Join-Path $root 'prime-agent-dashboard.ico') -PathType Leaf)
+    $mainShortcutPath = Join-Path $desktop 'Prime Agent.lnk'
+    $dashboardShortcutPath = Join-Path $desktop 'Prime Agent Dashboard.lnk'
+    Record 'Prime Agent desktop shortcut created' (Test-Path -LiteralPath $mainShortcutPath -PathType Leaf)
+    Record 'Prime Agent Dashboard desktop shortcut created' (Test-Path -LiteralPath $dashboardShortcutPath -PathType Leaf)
+    $dashboardShortcut = Read-Shortcut $dashboardShortcutPath
+    Record 'dashboard shortcut invokes prime-agent.ps1 agents' ($dashboardShortcut.Arguments -match 'prime-agent\.ps1" agents$')
+    Record 'dashboard shortcut uses the dashboard icon' ($dashboardShortcut.IconLocation -like "*prime-agent-dashboard.ico*")
 
     $sentinelRoot = Join-Path $root 'preexisting user file ünïcodé.txt'
     [System.IO.File]::WriteAllText($sentinelRoot, 'keep me')
@@ -264,6 +282,8 @@ try {
     $state = Read-State $root
     Record 'second rollback restores new revision as current' ($state.current.revision -eq ($baseRevision + 1) -and $state.current.directory -eq $rev2Dir)
     Record 'second rollback demotes baseline to previous' ($state.previous.revision -eq $baseRevision -and $state.previous.directory -eq $rev1Dir)
+    Record 'icons still present after rollbacks' ((Test-Path -LiteralPath (Join-Path $root 'prime-agent.ico') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $root 'prime-agent-dashboard.ico') -PathType Leaf))
+    Record 'shortcuts still present after rollbacks' ((Test-Path -LiteralPath $mainShortcutPath -PathType Leaf) -and (Test-Path -LiteralPath $dashboardShortcutPath -PathType Leaf))
 
     $versionResult = Invoke-CmdLauncher $root @('--version')
     Record "launcher still reports $baseVersion after rollbacks" ($versionResult.Code -eq 0 -and $versionResult.Text.Trim() -eq $baseVersion)
@@ -279,10 +299,11 @@ try {
     $result = Invoke-Installer @('-Rollback', '-InstallDir', $root2)
     Record 'rollback with no previous release refused' ($result.Code -ne 0 -and $result.Text -match 'previous')
 } finally {
+    $env:PRIME_AGENT_WINDOWS_DESKTOP_DIR = $envBefore.PRIME_AGENT_WINDOWS_DESKTOP_DIR
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Record 'caller environment unchanged' ($env:PRIME_AGENT_WINDOWS_INSTALL_DIR -eq $envBefore.PRIME_AGENT_WINDOWS_INSTALL_DIR -and $env:PRIME_AGENT_LAUNCHER_PATH -eq $envBefore.PRIME_AGENT_LAUNCHER_PATH)
+Record 'caller environment unchanged' ($env:PRIME_AGENT_WINDOWS_INSTALL_DIR -eq $envBefore.PRIME_AGENT_WINDOWS_INSTALL_DIR -and $env:PRIME_AGENT_LAUNCHER_PATH -eq $envBefore.PRIME_AGENT_LAUNCHER_PATH -and $env:PRIME_AGENT_WINDOWS_DESKTOP_DIR -eq $envBefore.PRIME_AGENT_WINDOWS_DESKTOP_DIR)
 Record 'test root removed' (-not (Test-Path -LiteralPath $work))
 
 Write-Output ""

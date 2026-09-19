@@ -378,6 +378,63 @@ function Assert-ReleaseProbe([string]$Directory, [string]$Version) {
     }
 }
 
+$ShortcutIconNames = @('prime-agent.ico', 'prime-agent-dashboard.ico')
+
+function Copy-ReleaseIcons([string]$ReleaseDir, [string]$Root) {
+    foreach ($iconName in $ShortcutIconNames) {
+        $source = Join-Path $ReleaseDir $iconName
+        # Older releases shipped no icons; shortcuts then fall back to the
+        # default icon rather than failing the install.
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+        Assert-NotReparse $source
+        $target = Join-Path $Root $iconName
+        Assert-NotReparseIfExists $target
+        Copy-Item -LiteralPath $source -Destination $target -Force
+    }
+}
+
+function Get-ShortcutDesktopDir {
+    # Tests redirect the desktop through this override so shortcut assertions
+    # never touch the caller's real Desktop.
+    if ($env:PRIME_AGENT_WINDOWS_DESKTOP_DIR) { return $env:PRIME_AGENT_WINDOWS_DESKTOP_DIR }
+    return [Environment]::GetFolderPath('Desktop')
+}
+
+function Ensure-Shortcut([string]$LinkPath, [string]$Ps1Path, [string]$LauncherArgs, [string]$IconPath) {
+    $shell = New-Object -ComObject WScript.Shell
+    if (Test-Path -LiteralPath $LinkPath -PathType Leaf) {
+        $existing = $shell.CreateShortcut($LinkPath)
+        $existingTargetName = [System.IO.Path]::GetFileName([string]$existing.TargetPath)
+        $isOurs = ([string]$existing.Arguments -match 'prime-agent\.ps1') -and
+            ($existingTargetName -eq 'wt.exe' -or $existingTargetName -eq 'powershell.exe')
+        # A shortcut the user repointed at something else is theirs: leave it.
+        if (-not $isOurs) { return }
+    }
+    $shortcut = $shell.CreateShortcut($LinkPath)
+    $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
+    if ($null -ne $wt) {
+        $shortcut.TargetPath = $wt.Source
+        $shortcut.Arguments = ('-d "%USERPROFILE%" powershell -NoLogo -File "{0}"{1}' -f $Ps1Path, $LauncherArgs)
+    } else {
+        $shortcut.TargetPath = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+        $shortcut.Arguments = ('-NoLogo -NoProfile -File "{0}"{1}' -f $Ps1Path, $LauncherArgs)
+    }
+    $shortcut.WorkingDirectory = '%USERPROFILE%'
+    if (Test-Path -LiteralPath $IconPath -PathType Leaf) {
+        $shortcut.IconLocation = "$IconPath,0"
+    }
+    $shortcut.Save()
+}
+
+function Ensure-Shortcuts([string]$Root, [string]$ReleaseDir) {
+    Copy-ReleaseIcons $ReleaseDir $Root
+    $desktop = Get-ShortcutDesktopDir
+    if (-not $desktop -or -not (Test-Path -LiteralPath $desktop -PathType Container)) { return }
+    $ps1Path = Join-Path $Root 'prime-agent.ps1'
+    Ensure-Shortcut (Join-Path $desktop 'Prime Agent.lnk') $ps1Path '' (Join-Path $Root 'prime-agent.ico')
+    Ensure-Shortcut (Join-Path $desktop 'Prime Agent Dashboard.lnk') $ps1Path ' agents' (Join-Path $Root 'prime-agent-dashboard.ico')
+}
+
 function Assert-ManagedRoot([string]$Root) {
     Assert-PathChainNotReparse $Root
     if (-not (Test-Path -LiteralPath $Root)) { return }
@@ -468,6 +525,7 @@ try {
             previous = $state.current
         }
         Write-ManagedState $rootPath $rolledBack
+        Ensure-Shortcuts $rootPath $previousDir
         Write-Output "Rolled back to Prime Agent $($state.previous.version) (revision $($state.previous.revision))."
         return
     }
@@ -508,6 +566,7 @@ try {
                 throw "Refusing to install revision $($metadata.revision) over the newer revision $($state.current.revision). Use -Rollback to restore the previous release."
             }
             if ($metadata.revision -eq $state.current.revision -and -not $Force.IsPresent) {
+                Ensure-Shortcuts $rootPath (Join-Path $rootPath ('releases\' + $state.current.directory))
                 Write-Output "Prime Agent $($metadata.version) (revision $($metadata.revision)) is already installed."
                 return
             }
@@ -557,6 +616,7 @@ try {
         previous = $(if ($null -ne $state) { $state.current } else { $null })
     }
     Write-ManagedState $rootPath $newState
+    Ensure-Shortcuts $rootPath $finalDir
     Write-Output "Installed Prime Agent $($metadata.version) (revision $($metadata.revision)) to $finalDir."
 } finally {
     if ($null -ne $stagingPath -and (Test-Path -LiteralPath $stagingPath)) {
