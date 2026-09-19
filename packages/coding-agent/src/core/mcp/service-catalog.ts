@@ -4,10 +4,9 @@
 // connection records; no secrets ever leave this module.
 
 import { timingSafeEqual } from "node:crypto";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { LocalCatalogLoadResult, McpServiceEntry, McpServiceSetupField } from "@earendil-works/pi-ai/mcp";
 import { createMcpOAuthProvider, loadLocalServiceCatalog, SERVICE_CATALOG } from "@earendil-works/pi-ai/mcp";
+import { expandTildePath } from "../../config.js";
 import type { AuthCredential, AuthStorage } from "../auth-storage.js";
 import type { McpServerConfig } from "../settings-manager.js";
 import { MCP_PROBE_ERRORS, probeMcpEndpoint } from "./connection-probe.js";
@@ -159,10 +158,7 @@ const MAX_TOTAL_CATALOG_ENTRIES = 500;
 
 /** Expand a leading ~ in a declared source path; other spellings pass through. */
 function expandSourcePath(rawPath: string): string {
-	if (rawPath === "~" || rawPath.startsWith("~/")) {
-		return join(homedir(), rawPath.slice(1));
-	}
-	return rawPath;
+	return expandTildePath(rawPath);
 }
 
 /**

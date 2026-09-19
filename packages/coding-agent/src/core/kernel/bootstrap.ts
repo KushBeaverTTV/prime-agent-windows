@@ -7,7 +7,7 @@ import { stderr, stdin } from "node:process";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { getPackageDir } from "../../config.js";
+import { expandTildePath, getPackageDir } from "../../config.js";
 import { isProcessAlive, spawnHidden } from "../../utils/child-process.js";
 import { tryAcquireDirLock } from "../../utils/dir-lock.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
@@ -61,6 +61,10 @@ export function buildBatchShimInvocation(
 	}
 	const env = { ...baseEnv };
 	const variables = values.map((value, index) => {
+		// Windows has no set-but-empty env vars (VAR= deletes it), so an empty
+		// value would leave %NAME% unexpanded and arrive as the literal
+		// placeholder. A quoted "" needs no expansion.
+		if (value === "") return `""`;
 		const name = `PRIME_AGENT_BATCH_${token}_${index}`;
 		env[name] = value;
 		return `"%${name}%"`;
@@ -153,12 +157,6 @@ async function isExecutable(filePath: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-function expandHome(filePath: string): string {
-	if (filePath === "~") return os.homedir();
-	if (filePath.startsWith("~/")) return path.join(os.homedir(), filePath.slice(2));
-	return filePath;
 }
 
 function fileContentHash(filePath: string): string {
@@ -380,13 +378,13 @@ function ensureKernelPythonKey(pythonSkills: readonly BootstrapPythonSkill[]): s
 
 export function getKernelVenvDir(): string {
 	const override = process.env.PRIME_AGENT_KERNEL_VENV;
-	if (override) return path.resolve(expandHome(override));
+	if (override) return path.resolve(expandTildePath(override));
 	return path.join(os.homedir(), ".prime", "agent", "kernel-venv");
 }
 
 function getXdgKernelVenvDir(): string {
 	const dataHome = process.env.XDG_DATA_HOME
-		? path.resolve(expandHome(process.env.XDG_DATA_HOME))
+		? path.resolve(expandTildePath(process.env.XDG_DATA_HOME))
 		: path.join(os.homedir(), ".local", "share");
 	return path.join(dataHome, "prime", "agent", "kernel-venv");
 }
@@ -906,7 +904,7 @@ async function ensureKernelPythonUncached(
 ): Promise<string> {
 	const override = process.env.PRIME_AGENT_KERNEL_PYTHON;
 	if (override) {
-		const python = path.resolve(expandHome(override));
+		const python = path.resolve(expandTildePath(override));
 		if (isBatchShim(python)) {
 			throw new Error(
 				`PRIME_AGENT_KERNEL_PYTHON must point directly to a Python executable, not a Windows batch shim: ${python}`,

@@ -5,6 +5,7 @@ import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } 
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.js";
 import { countChangedLines, formatFileChangeSummaryLine } from "../../modes/interactive/components/edit-summary.js";
+import type { theme as interactiveTheme } from "../../modes/interactive/theme/theme.js";
 import type { ToolDefinition } from "../extensions/types.js";
 import {
 	applyEditsToNormalizedContent,
@@ -191,10 +192,7 @@ function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path
 	return null;
 }
 
-function formatEditCall(
-	args: RenderableEditArgs | undefined,
-	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
-): string {
+function formatEditCall(args: RenderableEditArgs | undefined, theme: typeof interactiveTheme): string {
 	const invalidArg = invalidArgText(theme);
 	const rawPath = str(args?.file_path ?? args?.path);
 	const path = rawPath !== null ? shortenPath(rawPath) : null;
@@ -206,7 +204,7 @@ function formatEditResult(
 	args: RenderableEditArgs | undefined,
 	preview: EditPreview | undefined,
 	result: EditToolResultLike,
-	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
+	theme: typeof interactiveTheme,
 	isError: boolean,
 ): string | undefined {
 	const rawPath = str(args?.file_path ?? args?.path);
@@ -234,7 +232,7 @@ function formatEditResult(
 function getEditHeaderBg(
 	preview: EditPreview | undefined,
 	settledError: boolean | undefined,
-	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
+	theme: typeof interactiveTheme,
 ): (text: string) => string {
 	if (settledError || (preview && "error" in preview)) {
 		return (text: string) => theme.bg("toolErrorBg", text);
@@ -273,7 +271,7 @@ class EditChangeSummaryComponent implements Component {
 function buildEditCallComponent(
 	component: EditCallRenderComponent,
 	args: RenderableEditArgs | undefined,
-	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
+	theme: typeof interactiveTheme,
 	expanded: boolean,
 	cwd: string,
 ): EditCallRenderComponent {

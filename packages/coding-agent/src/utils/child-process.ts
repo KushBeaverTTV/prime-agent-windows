@@ -18,7 +18,7 @@ import {
 } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { constants } from "node:os";
-import { basename } from "node:path";
+import { basename, win32 } from "node:path";
 
 const EXIT_STDIO_GRACE_MS = 100;
 
@@ -80,6 +80,29 @@ export function shouldUseWindowsShell(command: string): boolean {
 	if (process.platform !== "win32") return false;
 	const commandName = basename(command).toLowerCase();
 	return commandName.endsWith(".cmd") || commandName.endsWith(".bat") || WINDOWS_SHELL_COMMANDS.has(commandName);
+}
+
+/**
+ * Windows process-tree kill via System32\taskkill.exe /T.
+ *
+ * child.kill() on Windows is TerminateProcess on the direct child only — any
+ * grandchildren leak. The absolute System32 path avoids resolving a planted
+ * CWD taskkill.exe, and NoDefaultCurrentDirectoryInExePath matches the other
+ * hardened invocation sites. Returns taskkill's success status; a pid that is
+ * already gone reports failure (nonzero exit) which callers may ignore.
+ */
+export function taskkillProcessTree(pid: number): boolean {
+	if (process.platform !== "win32") return false;
+	const result = spawnSyncHidden(
+		win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"),
+		["/F", "/T", "/PID", String(pid)],
+		{
+			stdio: "ignore",
+			timeout: 10_000,
+			env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+		},
+	);
+	return result.status === 0;
 }
 
 /** Cheap kill(0) existence probe; counts zombies as existing. */

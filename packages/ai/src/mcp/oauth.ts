@@ -1,4 +1,4 @@
-import type { Server } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { extractWWWAuthenticateParams, selectClientAuthMethod } from "@modelcontextprotocol/sdk/client/auth.js";
 import {
 	OAuthClientInformationFullSchema,
@@ -595,7 +595,7 @@ async function startCallbackServer(label: string): Promise<{
 		};
 	});
 
-	const handler = (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
+	const handler = (req: IncomingMessage, res: ServerResponse) => {
 		const url = new URL(req.url || "", "http://localhost");
 		if (url.pathname !== CALLBACK_PATH) {
 			res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });

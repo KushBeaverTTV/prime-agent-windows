@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import { Marked, type Token, Tokenizer, type TokenizerExtension, type Tokens } from "marked";
 import { latexToUnicode } from "../latex.js";
 import {
@@ -616,7 +617,8 @@ export class Markdown implements Component {
 					const styledLink = this.theme.link(this.theme.underline(linkText));
 					if (getCapabilities().hyperlinks) {
 						// A Windows drive letter is a file path, not a URL scheme.
-						const target = token.href.replace(/^([a-z]:[\\/])/i, "file:///$1");
+						// pathToFileURL encodes #, ? and % that a string rewrite would corrupt.
+						const target = /^[a-z]:[\\/]/i.test(token.href) ? pathToFileURL(token.href).href : token.href;
 						const href =
 							!target.startsWith("#") &&
 							(this.options.baseUrl || target !== token.href) &&

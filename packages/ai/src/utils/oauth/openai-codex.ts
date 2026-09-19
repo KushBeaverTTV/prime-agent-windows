@@ -5,9 +5,13 @@
  * It is only intended for CLI use, not browser environments.
  */
 
+import type { randomBytes as nodeRandomBytes } from "node:crypto";
+import type * as NodeHttp from "node:http";
+
 // NEVER convert to top-level imports - breaks browser/Vite builds
-let _randomBytes: typeof import("node:crypto").randomBytes | null = null;
-let _http: typeof import("node:http") | null = null;
+let _randomBytes: typeof nodeRandomBytes | null = null;
+let _http: typeof NodeHttp | null = null;
+
 if (typeof process !== "undefined" && (process.versions?.node || process.versions?.bun)) {
 	import("node:crypto").then((m) => {
 		_randomBytes = m.randomBytes;

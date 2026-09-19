@@ -5,7 +5,7 @@
  * It is only intended for CLI use, not browser environments.
  */
 
-import type { Server } from "node:http";
+import type { createServer as createHttpServer, Server } from "node:http";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.js";
 import { generatePKCE } from "./pkce.js";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthPrompt, OAuthProviderInterface } from "./types.js";
@@ -18,7 +18,7 @@ type CallbackServerInfo = {
 };
 
 type NodeApis = {
-	createServer: typeof import("node:http").createServer;
+	createServer: typeof createHttpServer;
 };
 
 let nodeApis: NodeApis | null = null;

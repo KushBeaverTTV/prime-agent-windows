@@ -1,7 +1,7 @@
 import type * as childProcess from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	buildBatchShimInvocation,
@@ -174,6 +174,8 @@ describe("Windows kernel subprocesses", () => {
 		process.env.PRIME_AGENT_KERNEL_VENV = join(tempDir, "venv");
 		process.env.PATH = tempDir;
 		process.env.PATHEXT = ".CMD";
+		// A planted ComSpec must not redirect the cmd.exe the shim launches.
+		process.env.ComSpec = join(tempDir, "planted-cmd.exe");
 		const uv = join(tempDir, "uv.cmd");
 		writeFileSync(uv, "@echo off\r\n");
 		chmodSync(uv, 0o755);
@@ -181,7 +183,7 @@ describe("Windows kernel subprocesses", () => {
 		await expect(ensureKernelPython({ onProgress: () => {} })).rejects.toThrow("spawn refused by test");
 
 		const call = spawn.mock.calls.at(-1);
-		expect(call?.[0]).toBe(process.env.ComSpec ?? "cmd.exe");
+		expect(call?.[0]).toBe(win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe"));
 		expect(call?.[2]).toMatchObject({ windowsHide: true, windowsVerbatimArguments: true, stdio: "ignore" });
 		expect(Object.values(call?.[2]?.env ?? {})).toContain(uv);
 	});

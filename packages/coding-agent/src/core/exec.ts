@@ -2,7 +2,7 @@
  * Shared command execution utilities for extensions and custom tools.
  */
 
-import { spawnHidden, waitForChildProcess } from "../utils/child-process.js";
+import { spawnHidden, taskkillProcessTree, waitForChildProcess } from "../utils/child-process.js";
 
 /**
  * Options for executing shell commands.
@@ -75,6 +75,12 @@ export async function execCommand(
 		const killProcess = () => {
 			if (!killed) {
 				killed = true;
+				if (process.platform === "win32") {
+					// child.kill() on Windows is TerminateProcess on the direct child
+					// only — grandchildren would leak. taskkill /T reaps the tree.
+					if (proc.pid !== undefined) taskkillProcessTree(proc.pid);
+					return;
+				}
 				proc.kill("SIGTERM");
 				forceKillTimeoutId = setTimeout(() => {
 					forceKillTimeoutId = undefined;

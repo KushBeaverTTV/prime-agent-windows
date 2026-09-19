@@ -318,6 +318,8 @@ export class TUI extends Container {
 	public onCopy?: (text: string) => void;
 	/** Opens hyperlinks clicked in the fullscreen viewport; when unset, the platform opener is used. */
 	public onOpenUrl?: (url: string) => void;
+	/** Handles `prime-agent-action:` hyperlinks clicked in the fullscreen viewport; they never reach the OS opener. */
+	public onActionLink?: (url: URL) => void;
 	private renderRequested = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
@@ -772,6 +774,10 @@ export class TUI extends Container {
 		let href: string;
 		try {
 			const parsed = new URL(url);
+			if (parsed.protocol === "prime-agent-action:") {
+				this.onActionLink?.(parsed);
+				return;
+			}
 			if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.protocol !== "file:") return;
 			href = parsed.href;
 		} catch {
@@ -1916,7 +1922,7 @@ export class TUI extends Container {
 		buffer += "\x1b[?2026l"; // End synchronized output
 
 		if (process.env.PI_TUI_DEBUG === "1") {
-			const debugDir = "/tmp/tui";
+			const debugDir = path.join(os.tmpdir(), "pi-tui");
 			fs.mkdirSync(debugDir, { recursive: true });
 			const debugPath = path.join(debugDir, `render-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
 			const debugData = [

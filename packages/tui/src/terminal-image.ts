@@ -90,6 +90,12 @@ export function detectCapabilities(): TerminalCapabilities {
 		return { images: null, trueColor: true, hyperlinks: true };
 	}
 
+	// Windows Terminal (default `wt.exe` host on the Windows install path):
+	// no image protocol, but OSC 8 and truecolor are supported.
+	if (process.env.WT_SESSION) {
+		return { images: null, trueColor: true, hyperlinks: true };
+	}
+
 	// Unknown terminal: be conservative. OSC 8 is rendered invisibly as "just
 	// text" on terminals that swallow it, which means the URL disappears from
 	// the rendered output. Default to the legacy `text (url)` behavior unless we

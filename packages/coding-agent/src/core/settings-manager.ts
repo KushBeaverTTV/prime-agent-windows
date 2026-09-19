@@ -1,9 +1,8 @@
 import type { ServiceTier, Transport } from "@earendil-works/pi-ai";
 import { existsSync, mkdirSync, readFileSync } from "fs";
-import { homedir } from "os";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
-import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
+import { CONFIG_DIR_NAME, expandTildePath, getAgentDir } from "../config.js";
 import { writeFileAtomicSync } from "../utils/atomic-file.js";
 import type { ProviderWaitPolicy } from "./provider-retry.js";
 
@@ -765,13 +764,7 @@ export class SettingsManager {
 		if (!sessionDir) {
 			return sessionDir;
 		}
-		if (sessionDir === "~") {
-			return homedir();
-		}
-		if (sessionDir.startsWith("~/")) {
-			return join(homedir(), sessionDir.slice(2));
-		}
-		return sessionDir;
+		return expandTildePath(sessionDir);
 	}
 
 	getDefaultProvider(): string | undefined {
