@@ -62,6 +62,28 @@ export function calculateCost<TApi extends Api>(
 	return usage.cost;
 }
 
+/**
+ * Some OpenAI-compatible gateways (observed on OpenRouter) report the billed
+ * USD total on the usage object. When present it outranks the computed total:
+ * components are rescaled so they still add up and `cost.total === reported`.
+ */
+export function applyReportedCost(usage: Usage, reportedTotal: unknown): void {
+	if (typeof reportedTotal !== "number" || !Number.isFinite(reportedTotal) || reportedTotal < 0) {
+		return;
+	}
+	const computed = usage.cost.total;
+	if (computed > 0) {
+		const scale = reportedTotal / computed;
+		usage.cost.input *= scale;
+		usage.cost.output *= scale;
+		usage.cost.cacheRead *= scale;
+		usage.cost.cacheWrite *= scale;
+	} else {
+		usage.cost.output = reportedTotal;
+	}
+	usage.cost.total = reportedTotal;
+}
+
 const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export function getSupportedThinkingLevels<TApi extends Api>(model: Model<TApi>): ModelThinkingLevel[] {

@@ -438,6 +438,40 @@ describe("ModelRegistry", () => {
 		});
 	});
 
+	describe("live model pricing", () => {
+		test("applies the cached models.dev snapshot on refresh, with modelOverrides winning", async () => {
+			writeFileSync(
+				join(tempDir, "models-dev-pricing-cache.json"),
+				JSON.stringify({
+					fetchedAt: Date.now(),
+					providers: {
+						anthropic: {
+							"claude-sonnet-4-5": { input: 9, output: 45, cacheRead: 0.9, cacheWrite: 11 },
+						},
+					},
+				}),
+			);
+			writeRawModelsJson({
+				anthropic: { modelOverrides: { "claude-sonnet-4-5": { cost: { input: 7 } } } },
+			});
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => {
+					throw new Error("offline");
+				}),
+			);
+			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
+			await registry.refreshAvailableModels();
+			await registry.waitForPendingModelRefreshes(5000);
+			expect(registry.find("anthropic", "claude-sonnet-4-5")?.cost).toEqual({
+				input: 7,
+				output: 45,
+				cacheRead: 0.9,
+				cacheWrite: 11,
+			});
+		});
+	});
+
 	describe("modelOverrides (per-model customization)", () => {
 		const sonnetId = "anthropic/claude-sonnet-4";
 		const opusId = "anthropic/claude-opus-4";

@@ -1,0 +1,1 @@
+- Added live model pricing refreshed from models.dev, and honored provider-reported usage costs when a gateway returns a billed total.

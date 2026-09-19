@@ -12,7 +12,7 @@ import type {
 } from "openai/resources/chat/completions.js";
 import { getAnthropicCacheWriteCost, hasStandardAnthropicCachePricing } from "../cache-pricing.js";
 import { getEnvApiKey, getPrimeTeamId } from "../env-api-keys.js";
-import { calculateCost, clampThinkingLevel } from "../models.js";
+import { applyReportedCost, calculateCost, clampThinkingLevel } from "../models.js";
 import type {
 	AssistantMessage,
 	CacheRetention,
@@ -1099,6 +1099,9 @@ function parseChunkUsage(
 		completion_tokens?: number;
 		prompt_cache_hit_tokens?: number;
 		prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+		// Provider-reported billed USD total (observed on OpenRouter); outranks
+		// static pricing when present.
+		cost?: number;
 	},
 	model: Model<"openai-completions">,
 	cacheWriteCost?: number,
@@ -1127,6 +1130,7 @@ function parseChunkUsage(
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 	calculateCost(model, usage, cacheWriteCost === undefined ? undefined : { cacheWrite: cacheWriteCost });
+	applyReportedCost(usage, rawUsage.cost);
 	return usage;
 }
 

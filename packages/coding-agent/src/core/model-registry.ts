@@ -21,6 +21,7 @@ import {
 	resetApiProviders,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { applyLivePricing, type LivePricingSnapshot, refreshLivePricing } from "@earendil-works/pi-ai/live-pricing";
 import { registerBuiltinMcpOAuthProviders } from "@earendil-works/pi-ai/mcp";
 import { getXaiSubscriptionModel, registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync } from "fs";
@@ -462,6 +463,8 @@ export class ModelRegistry {
 	private backgroundPrivatePrimeAuthorization: { fingerprint: string; promise: Promise<void> } | undefined;
 	private livePrimeInferenceModels: Model<"openai-completions">[] | undefined;
 	private pendingPrimeInferenceCatalogRefresh: Promise<void> | undefined;
+	private livePricingSnapshot: LivePricingSnapshot | undefined;
+	private pendingLivePricingRefresh: Promise<void> | undefined;
 	private loadError: string | undefined = undefined;
 
 	/** Re-register dynamic OAuth providers (e.g. user MCP servers) after refresh() resets the registry. */
@@ -540,6 +543,10 @@ export class ModelRegistry {
 		return this.modelsJsonPath ? join(dirname(this.modelsJsonPath), "prime-inference-models-cache.json") : undefined;
 	}
 
+	private livePricingCachePath(): string | undefined {
+		return this.modelsJsonPath ? join(dirname(this.modelsJsonPath), "models-dev-pricing-cache.json") : undefined;
+	}
+
 	private bundledPrimeInferenceModels(): Model<"openai-completions">[] {
 		return getModels(PRIME_INFERENCE_PROVIDER_ID) as Model<"openai-completions">[];
 	}
@@ -602,7 +609,9 @@ export class ModelRegistry {
 		return mergePrimeInferenceModels(bundledModels, livePrimeInferenceModels).map((model) => {
 			const providerOverride = overrides.get(model.provider);
 			const perModelOverrides = modelOverrides.get(model.provider);
-			let configuredModel = model;
+			// Prime Inference models already carry live pricing from their own catalog.
+			let configuredModel =
+				model.provider === PRIME_INFERENCE_PROVIDER_ID ? model : applyLivePricing(model, this.livePricingSnapshot);
 
 			if (providerOverride) {
 				configuredModel = {
@@ -868,6 +877,18 @@ export class ModelRegistry {
 					// Settlement, not failure, is what the waiter observes.
 					.catch(() => undefined);
 			}
+			const pricingCachePath = this.livePricingCachePath();
+			if (pricingCachePath) {
+				this.pendingLivePricingRefresh = refreshLivePricing(pricingCachePath, {
+					offline: isOfflineModeEnabled(),
+				})
+					.then((snapshot) => {
+						if (!snapshot) return;
+						this.livePricingSnapshot = snapshot;
+						this.reloadModelsAfterCatalogChange();
+					})
+					.catch(() => undefined);
+			}
 			await this.refreshPrivatePrimeInferenceAuthorization(
 				previousPrivateModelIds,
 				previousTeamId,
@@ -890,6 +911,7 @@ export class ModelRegistry {
 	async waitForPendingModelRefreshes(timeoutMs: number): Promise<void> {
 		const pending: Promise<unknown>[] = [];
 		if (this.pendingPrimeInferenceCatalogRefresh) pending.push(this.pendingPrimeInferenceCatalogRefresh);
+		if (this.pendingLivePricingRefresh) pending.push(this.pendingLivePricingRefresh);
 		if (this.backgroundPrivatePrimeAuthorization?.promise) {
 			pending.push(this.backgroundPrivatePrimeAuthorization.promise);
 		}

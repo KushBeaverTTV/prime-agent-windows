@@ -46,6 +46,10 @@
 			"types": "./dist/oauth.d.ts",
 			"import": "./dist/oauth.js"
 		},
+		"./live-pricing": {
+			"types": "./dist/live-pricing.d.ts",
+			"import": "./dist/live-pricing.js"
+		},
 		"./mcp": {
 			"types": "./dist/mcp.d.ts",
 			"import": "./dist/mcp.js"

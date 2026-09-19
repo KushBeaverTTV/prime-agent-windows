@@ -12,7 +12,7 @@ import type {
 	ResponseReasoningItem,
 	ResponseStreamEvent,
 } from "openai/resources/responses/responses.js";
-import { calculateCost } from "../models.js";
+import { applyReportedCost, calculateCost } from "../models.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -529,6 +529,12 @@ export async function processResponsesStream<TApi extends Api>(
 					? options.resolveServiceTier(response?.service_tier, options.serviceTier)
 					: (response?.service_tier ?? options.serviceTier);
 				options.applyServiceTierPricing(output.usage, serviceTier);
+			}
+			if (output.usage) {
+				// Some gateways (observed on OpenRouter) report the billed USD total;
+				// it outranks computed pricing, including service-tier adjustments.
+				const reported = (response?.usage as { cost?: number } | undefined)?.cost;
+				applyReportedCost(output.usage, reported);
 			}
 			output.stopReason = mapStopReason(response?.status);
 			if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
