@@ -4,8 +4,10 @@ import asyncio
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 if os.name != "nt":
@@ -132,6 +134,52 @@ class WindowsBashRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result.exit_code, 0)
             self.assertIn(f"concurrent-{index}", result.output)
         self.assertEqual(len({handle.pid for handle in handles}), 4)
+
+    def test_process_start_ticks_matches_powershell(self):
+        pid = os.getpid()
+        ticks = bash_module._windows_process_start_ticks(pid)
+        self.assertIsNotNone(ticks)
+        powershell = bash_module._system32("WindowsPowerShell", "v1.0", "powershell.exe")
+        out = subprocess.run(
+            [
+                powershell,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                f"([System.Diagnostics.Process]::GetProcessById({pid})).StartTime.ToUniversalTime().Ticks",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        self.assertTrue(out.isdigit(), f"powershell start-ticks probe returned {out!r}")
+        self.assertEqual(ticks, int(out))
+
+    async def test_bash_spawn_mean_duration(self):
+        # Evidence only: journals force the per-spawn processStartId lookup that
+        # previously cost a powershell.exe launch per bash() call.
+        keys = ("PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL", "PRIME_AGENT_KERNEL_OWNER_PID")
+        saved = {key: os.environ.get(key) for key in keys}
+        os.environ["PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL"] = os.path.join(
+            _TEMP_DIR, "orphan-journal.jsonl"
+        )
+        os.environ["PRIME_AGENT_KERNEL_OWNER_PID"] = str(os.getpid())
+        durations = []
+        try:
+            for _ in range(5):
+                start = time.perf_counter()
+                result = await asyncio.wait_for(bash("echo hi"), _BOUND)
+                durations.append(time.perf_counter() - start)
+                self.assertEqual(result.exit_code, 0)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        formatted = ", ".join(f"{duration:.3f}s" for duration in durations)
+        print(f"bash('echo hi') x5: {formatted} | mean={sum(durations) / len(durations):.3f}s")
 
     async def _spawn_marker_child(self):
         listener = socket.socket()

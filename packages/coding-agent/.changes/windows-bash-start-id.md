@@ -1,0 +1,1 @@
+- Removed a PowerShell spawn from every `bash()` call on Windows, cutting roughly a second of latency per command.

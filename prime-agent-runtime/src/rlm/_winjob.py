@@ -118,6 +118,8 @@ def _kernel32():
             ("WaitForSingleObject", [h, _DWORD], _DWORD),
             ("GetExitCodeProcess", [h, p], b),
             ("TerminateProcess", [h, wintypes.UINT], b),
+            ("OpenProcess", [_DWORD, b, _DWORD], h),
+            ("GetProcessTimes", [h, p, p, p, p], b),
         ):
             fn = getattr(k32, name)
             fn.argtypes, fn.restype = argtypes, restype

@@ -1166,10 +1166,45 @@ def _taskkill_tree(pid: int) -> bool:
         return False
 
 
+def _windows_process_start_ticks(pid: int) -> int | None:
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    k32 = _winjob._kernel32()
+    handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        creation, exit_, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        got = k32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        )
+        if not got:
+            return None
+    finally:
+        k32.CloseHandle(handle)
+    filetime = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    # FILETIME counts 100 ns ticks from 1601-01-01; DateTime ticks count from 0001-01-01.
+    return filetime + 504911232000000000
+
+
 def _process_start_id(pid: int) -> str | None:
     if os.name == "nt":
         # Mirrors getWindowsProcessStartId in session-lease.ts byte-for-byte so
-        # the host's identity comparison matches the journaled string.
+        # the host's identity comparison matches the journaled string. .NET's
+        # StartTime.ToUniversalTime() equals the FILETIME creation time, so
+        # GetProcessTimes yields the identical integer without a powershell spawn.
+        try:
+            ticks = _windows_process_start_ticks(pid)
+        except OSError:
+            ticks = None
+        if ticks is not None:
+            return f"win:{ticks}"
         try:
             out = subprocess.run(
                 [
