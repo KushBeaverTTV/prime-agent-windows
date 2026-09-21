@@ -103,7 +103,7 @@ function Save-GitStage {
 function Invoke-Logged {
     # Run an external command, tee output to a per-gate log, return exit code.
     param([string]$Name, [string]$FilePath, [string[]]$CmdArgs, [string]$Cwd)
-    $gl = Join-Path $logsDir "$ts-gate-$Name.log"
+    $gl = Join-Path $logsDir ("$ts-gate-{0}.log" -f ($Name -replace '[:\\/]', '-'))
     Write-Host "== gate $Name : $FilePath $($CmdArgs -join ' ')"
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
@@ -255,7 +255,7 @@ function Invoke-Gate {
     } catch {
         $script:gateResults[$Name] = @{ status = 'fail'; seconds = [int]$sw.Elapsed.TotalSeconds }
         $tail = ""
-        $gl = Join-Path $logsDir "$ts-gate-$Name.log"
+        $gl = Join-Path $logsDir ("$ts-gate-{0}.log" -f ($Name -replace '[:\\/]', '-'))
         if (Test-Path $gl) {
             $fence = [string][char]96 * 3
             $tail = "### last lines of $gl`n$fence`n" +
