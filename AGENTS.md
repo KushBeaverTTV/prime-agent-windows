@@ -278,8 +278,8 @@ For the native Windows port (shell/runtime and standalone packaging/updates), th
 Windows release maintenance:
 
 - The Windows fork is remote `windows` (`https://github.com/KushBeaverTTV/prime-agent-windows`); upstream is `origin`. Port work lives on branch `windows-native`.
-- Upstream sync is a reviewed merge from `origin/main` into the Windows branch; unresolved conflicts block the release. Never install raw upstream packages.
-- Create release tag `windows-v<upstreamVersion>-r<revision>` only after port review; the native CI workflow validates the tag before publishing. No automatic unreviewed merge or release script.
+- Upstream sync is automated by `scripts/sync-upstream.ps1` (scheduled task `Prima Upstream Sync`, daily 04:30; `npm run sync:upstream`). It merges `origin/main` into `windows-native` in a scratch worktree, auto-resolves changelog, lockfile and generated-model conflicts, delegates remaining conflicts to `prime-agent -p`, and lands the merge only when every gate passes: typecheck, test policy, native shell/install/update unit tests, the Python runtime harness, a full release build, the isolated installer test, and the packaged-artifact integration checks. A passing run commits, tags `windows-v<upstreamVersion>-r<revision>`, pushes to `windows`, and installs the CI-published release through `prime-agent update` once it appears. An unresolved conflict or a failed gate stops the run and leaves the worktree plus a report under `artifacts/upstream-sync/`; nothing is landed. Never install raw upstream packages.
+- Manual switches: `-DryRun` (merge + gates, no land), `-NoPush`, `-NoInstall`, `-NoAgent`, `-ForceRelease` (tag and release the current HEAD).
 
 Known `npm run check` baseline limitations on native Windows:
 

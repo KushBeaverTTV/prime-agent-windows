@@ -66,7 +66,7 @@ prime-agent.cmd update              # Update to the newest Windows release
 prime-agent.cmd update --rollback   # Roll back to the previous release
 ```
 
-The build is not code-signed: unsigned PowerShell scripts require an execution policy that allows them, and the unsigned executable may trigger SmartScreen. The installer never changes execution policy or other system settings. The agent runtime and built-in tools are native; third-party extensions that depend on Linux-only tools keep their own platform requirements. Windows releases are produced from reviewed merges of upstream into the fork; upstream updates flow through the Windows CI and are not applied automatically.
+The build is not code-signed: unsigned PowerShell scripts require an execution policy that allows them, and the unsigned executable may trigger SmartScreen. The installer never changes execution policy or other system settings. The agent runtime and built-in tools are native; third-party extensions that depend on Linux-only tools keep their own platform requirements. Windows releases are produced by the fork's automated upstream-sync pipeline (`scripts/sync-upstream.ps1`): it merges upstream in a scratch worktree, lands only when every Windows gate passes, and installs the CI-published release through `prime-agent update`; raw upstream packages are never installed.
 
 ## Why Prime Agent
 

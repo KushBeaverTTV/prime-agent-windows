@@ -1,0 +1,1 @@
+- Added `scripts/sync-upstream.ps1`, an automated, gate-protected upstream merge, release and update pipeline for the Windows port.
