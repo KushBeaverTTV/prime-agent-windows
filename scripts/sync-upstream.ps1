@@ -345,7 +345,7 @@ foreach ($remote in @($UpstreamRemote, $ForkRemote)) {
 
 $forkBranch = "$ForkRemote/$PortBranch"
 if ((Invoke-Git @('rev-parse', '--verify', '--quiet', $forkBranch) -AllowFail).Code -eq 0) {
-    if ((Invoke-Git @('merge-base', '--is-ancestor', 'HEAD', $forkBranch) -AllowFail).Code -ne 0) {
+    if ((Invoke-Git @('merge-base', '--is-ancestor', $forkBranch, 'HEAD') -AllowFail).Code -ne 0) {
         Finish-Run 'preflight' 4 "local $PortBranch is behind or diverged from $forkBranch"
     }
 }
