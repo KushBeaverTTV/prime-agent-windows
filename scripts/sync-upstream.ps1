@@ -428,12 +428,12 @@ if ($needsMerge) {
 # ------------------------------------------------------- step 4: conflict tiers
 function Get-Conflicts { return (Invoke-Git @('diff', '--name-only', '--diff-filter=U') -Cwd $wtDir).Out }
 
+$regenModels = $false
 if ($hadMerge) {
     $conflicts = @(Get-Conflicts)
     Write-Host "conflicted files: $($conflicts.Count)"
 
     # --- tier a: auto
-    $regenModels = $false
     foreach ($f in @($conflicts)) {
         $rel = $f -replace '/', '\'
         if ($f -match '^packages/[^/]+/(CHANGELOG\.md|\.changes/[^/]+\.md)$') {
