@@ -109,7 +109,9 @@ function Invoke-Logged {
     $ErrorActionPreference = 'Continue'
     Push-Location $Cwd
     try {
-        & $FilePath @CmdArgs 2>&1 | Tee-Object -FilePath $gl
+        # Tee passes records through; Write-Host consumes them so only the
+        # hashtable below is on the output stream (StrictMode-safe .Code).
+        & $FilePath @CmdArgs 2>&1 | Tee-Object -FilePath $gl | Write-Host
         $code = $LASTEXITCODE
     } finally {
         Pop-Location
