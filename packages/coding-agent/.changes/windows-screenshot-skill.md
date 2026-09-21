@@ -1,0 +1,1 @@
+- Added the built-in `screenshot` skill: capture the desktop, a monitor, a window or a region on Windows and attach it to the model's context.

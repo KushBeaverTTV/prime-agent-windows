@@ -181,6 +181,17 @@ class WindowsBashRuntimeTest(unittest.IsolatedAsyncioTestCase):
         formatted = ", ".join(f"{duration:.3f}s" for duration in durations)
         print(f"bash('echo hi') x5: {formatted} | mean={sum(durations) / len(durations):.3f}s")
 
+    def test_screenshot_skill_suite(self):
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-windows-screenshot.py")
+        result = subprocess.run(
+            [sys.executable, script], capture_output=True, text=True, timeout=600
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"screenshot skill suite failed\n{result.stdout[-4000:]}\n{result.stderr[-4000:]}",
+        )
+
     async def _spawn_marker_child(self):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))

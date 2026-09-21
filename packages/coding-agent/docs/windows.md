@@ -44,6 +44,10 @@ prime-agent.cmd update --rollback   # Roll back to the previous release
 
 `update` fetches the release manifest (`windows.json`), verifies the archive SHA-256, and invokes `install-windows.ps1` non-interactively; `--rollback` switches activation back to the retained previous release. The build is not code-signed — SmartScreen may prompt on first launch, and unsigned `.ps1` scripts need an execution policy that allows them (the installer never changes execution policy).
 
+## Seeing the desktop
+
+The bundled `screenshot` skill lets a vision-capable model look at the screen: `await screenshot()` captures all monitors, `await screenshot("Notepad")` grabs a window by title substring, and `monitor=`/`region=` narrow the capture. The PNG lands under `%TEMP%\prime-agent-screenshots\` (or a `save=` path) and is attached to context like a pasted image.
+
 ## Upstream sync
 
 Windows releases are produced by the automated upstream-sync pipeline: `scripts/sync-upstream.ps1` (scheduled task `Prima Upstream Sync`, daily 04:30; `npm run sync:upstream`) merges `origin/main` into `windows-native` in a scratch worktree, auto-resolves changelog/lockfile/generated-model conflicts, delegates remaining conflicts to `prime-agent -p`, and lands the merge only when every gate passes (typecheck, test policy, native unit tests, the Python runtime harness, a full release build, the isolated installer test, and the packaged-artifact checks). A passing run tags `windows-v<version>-r<revision>`, pushes to the fork, and installs the CI-published release via `prime-agent update`. Failed gates or unresolved conflicts stop the run and leave the worktree plus a report under `artifacts/upstream-sync/`; nothing is landed, and raw upstream packages are never installed. See AGENTS.md for the full contract and manual switches.
