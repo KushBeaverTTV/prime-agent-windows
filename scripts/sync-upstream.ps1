@@ -172,7 +172,7 @@ function Invoke-AgentUpdate {
     # prime-agent.cmd is a batch shim; run it through cmd.exe.
     $cmd = Join-Path $InstallRoot 'prime-agent.cmd'
     return Invoke-Proc "$env:SystemRoot\System32\cmd.exe" `
-        "/d /s /c `"`"$cmd`" update --self --force`"" $InstallRoot (10 * 60 * 1000)
+        "/d /s /c `"`"$cmd`" update --force`"" $InstallRoot (10 * 60 * 1000)
 }
 
 function Write-Report {
