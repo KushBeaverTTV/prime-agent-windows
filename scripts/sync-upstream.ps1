@@ -329,8 +329,19 @@ if ($branch -ne $PortBranch) { Finish-Run 'preflight' 4 "repo is on '$branch', e
 $dirty = (Invoke-Git @('status', '--porcelain')).Out
 if (@($dirty).Count -gt 0) { Finish-Run 'preflight' 4 "worktree is dirty: $(@($dirty) -join '; ')" }
 
-Invoke-Git @('fetch', $UpstreamRemote, '--tags') | Out-Null
-Invoke-Git @('fetch', $ForkRemote, '--tags') | Out-Null
+foreach ($remote in @($UpstreamRemote, $ForkRemote)) {
+    $f = Invoke-Git @('fetch', $remote, '--tags') -AllowFail
+    if ($f.Code -ne 0) {
+        $rejected = @($f.Out + $f.Err | Where-Object { "$_" -match '\[rejected\]' })
+        $clobberOnly = $rejected.Count -gt 0 -and
+            (@($rejected | Where-Object { "$_" -notmatch 'would clobber existing tag' }).Count -eq 0)
+        if ($clobberOnly) {
+            $script:warnings.Add("fetch $remote`: local tag(s) diverge from remote (clobber rejected); continuing")
+        } else {
+            Finish-Run 'preflight' 4 "git fetch $remote --tags failed: $($f.Out + $f.Err -join ' ')"
+        }
+    }
+}
 
 $forkBranch = "$ForkRemote/$PortBranch"
 if ((Invoke-Git @('rev-parse', '--verify', '--quiet', $forkBranch) -AllowFail).Code -eq 0) {
