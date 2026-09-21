@@ -242,6 +242,17 @@ function Finish-Run {
     Write-LastRun
     $prio = 'normal'; if ($Code -ge 2 -and $Code -le 5) { $prio = 'high' }
     Send-Notify "upstream-sync $Result (exit $Code): $Summary" $prio
+    try {
+        # PrimaTray.ps1 watches this directory and raises a toast per record.
+        $eventsDir = 'C:\Cornerstone\services\prima-telegram\events'
+        New-Item -ItemType Directory -Path $eventsDir -Force | Out-Null
+        $ev = [ordered]@{ kind = 'sync_result'; title = "upstream-sync $Result"
+                          body = [string]$Summary
+                          ts = [int][DateTimeOffset]::Now.ToUnixTimeSeconds() }
+        $tmp = Join-Path $eventsDir "$ts-sync_result.tmp"
+        [System.IO.File]::WriteAllText($tmp, ($ev | ConvertTo-Json -Compress))
+        Move-Item $tmp ($tmp -replace '\.tmp$', '.json') -Force
+    } catch { }
     exit $Code
 }
 
