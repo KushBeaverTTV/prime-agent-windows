@@ -57,6 +57,7 @@ $script:agentResolved = [System.Collections.Generic.List[string]]::new()
 $script:unresolved = [System.Collections.Generic.List[string]]::new()
 $script:warnings = [System.Collections.Generic.List[string]]::new()
 $script:result = 'started'
+$script:finished = $false
 $script:exitCode = 0
 $script:upstreamSha = ''
 $script:mergeSha = ''
@@ -237,6 +238,7 @@ function Finish-Run {
     param([string]$Result, [int]$Code, [string]$Summary, [string[]]$ExtraSections = @())
     $script:result = $Result
     $script:exitCode = $Code
+    $script:finished = $true
     $script:summary = $Summary
     Write-Report -ExtraSections $ExtraSections
     Write-LastRun
@@ -663,7 +665,18 @@ if ($needsMerge) {
 Invoke-Git @('tag', '-a', $script:tag, '-m', "Prime Agent Windows $($script:version) r$($script:revision)", $script:mergeSha) | Out-Null
 
 if (-not $NoPush) {
-    if ($needsMerge) { Invoke-Git @('push', $ForkRemote, "$PortBranch") | Out-Null }
+    # A tag must never reference commits the fork branch does not have: push the
+    # branch whenever the fork tip is not contained in what we are tagging.
+    $forkRef = "$ForkRemote/$PortBranch"
+    $pushBranch = $true
+    $forkTip = Invoke-Git @('rev-parse', '--verify', '--quiet', $forkRef) -AllowFail
+    if ($forkTip.Code -eq 0) {
+        $forkSha = ($forkTip.Out | Select-Object -First 1).Trim()
+        $pushBranch = ($forkSha -ne $script:mergeSha)
+    }
+    if ($pushBranch) {
+        Invoke-Git @('push', $ForkRemote, "$($script:mergeSha):refs/heads/$PortBranch") | Out-Null
+    }
     Invoke-Git @('push', $ForkRemote, $script:tag) | Out-Null
 }
 
@@ -682,6 +695,26 @@ if (-not $NoInstall -and -not $NoPush -and -not $NoGitHub) {
             $RepoRoot (60 * 1000)
         $assets = @($gv.Stdout -split "`r?`n" | Where-Object { $_.Trim() })
         if ($assets -contains 'windows.json') { $published = $true; break }
+        # Watch the release CI run for this tag; fail fast instead of polling
+        # for an asset a failed run will never publish.
+        $runs = Invoke-Proc $ghExe ('run list --repo ' + $slug +
+            ' --workflow "Windows Native Release" --json databaseId,status,conclusion,headBranch,event --limit 10') `
+            $RepoRoot (60 * 1000)
+        if ($runs.Code -eq 0 -and $runs.Stdout.Trim()) {
+            $ciRuns = @()
+            try { $ciRuns = @($runs.Stdout | ConvertFrom-Json) } catch { }
+            $tagRun = @($ciRuns | Where-Object { $_.headBranch -eq $script:tag }) | Select-Object -First 1
+            if ($tagRun -and $tagRun.status -eq 'completed' -and
+                @('failure', 'cancelled', 'timed_out') -contains $tagRun.conclusion) {
+                $fl = Invoke-Proc $ghExe "run view $($tagRun.databaseId) --repo $slug --log-failed" `
+                    $RepoRoot (60 * 1000)
+                $fence = [string][char]96 * 3
+                $tail = "### CI failure (run $($tagRun.databaseId), conclusion $($tagRun.conclusion))`n$fence`n" +
+                    ((@($fl.Stdout -split "`r?`n") | Select-Object -Last 60) -join "`n") + "`n$fence"
+                Finish-Run 'ci-failed' 5 ("CI run $($tagRun.databaseId) for $($script:tag) concluded " +
+                    "$($tagRun.conclusion); branch+tag pushed, not installed.") @($tail)
+            }
+        }
         Write-Host "waiting for CI release $($script:tag) ..."
         Start-Sleep -Seconds 60
     }
@@ -711,6 +744,16 @@ Finish-Run 'landed' 0 ("landed " + $(if ($needsMerge) { "merge $($script:mergeSh
             "$($_.ScriptStackTrace)`n$fence")
     } catch { exit 4 }
 } finally {
+    # A stop mid-body (Ctrl+C, terminating pipeline error) reaches here without
+    # a Finish-Run: still record the outcome so the next run does not treat a
+    # leftover worktree as review state without a result.
+    if (-not $script:finished) {
+        try {
+            $script:result = 'aborted'
+            $script:exitCode = 4
+            Write-LastRun
+        } catch { }
+    }
     try { Stop-Transcript | Out-Null } catch {}
     Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
 }

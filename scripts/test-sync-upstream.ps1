@@ -214,6 +214,20 @@ if (-not $SkipAgentCase) {
     Write-Host 'case 6 skipped (-SkipAgentCase)'
 }
 
+# ---------------------------------------------------------- case 7: release pushes branch when ahead of fork
+Write-Host 'case 7: -ForceRelease with nothing to merge pushes the port branch'
+$fx7 = New-Fixture (Join-Path $root 'case7') $false
+# Bring the port branch up to date with upstream ourselves (union merge of the
+# changelog conflict), so the sync sees nothing to merge while local is ahead
+# of the fork's branch tip.
+Invoke-FixtureGit $fx7.Repo @('fetch', 'origin') | Out-Null
+Invoke-FixtureGit $fx7.Repo @('merge', '-X', 'ours', '-m', 'fixture merge', 'origin/main') | Out-Null
+$aheadHead = (Invoke-FixtureGit $fx7.Repo @('rev-parse', 'HEAD') | Select-Object -First 1).Trim()
+$r = Invoke-Sync $fx7.Repo $fakeInstall @('-Gates', 'none', '-NoAgent', '-ForceRelease')
+Assert ($r.Code -eq 0) "case7 exit code 0 (got $($r.Code): $(($r.Out | Select-Object -Last 3) -join ' | '))"
+$forkTip = (Invoke-FixtureGit $fx7.Fork @('rev-parse', 'refs/heads/windows-native') | Select-Object -First 1).Trim()
+Assert ($forkTip -eq $aheadHead) "case7 fork branch tip equals local HEAD (fork=$forkTip head=$aheadHead)"
+
 } finally {
     Write-Host ''
     Write-Host "fixture root kept for inspection: $root"
