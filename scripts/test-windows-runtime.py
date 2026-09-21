@@ -13,6 +13,10 @@ import unittest
 if os.name != "nt":
     sys.exit("test-windows-runtime.py exercises the native Windows shell path only")
 
+# setUpModule scrubs PATH down to System32 + the interpreter dir; capture uv's
+# location now so test_screenshot_skill_suite can hand it to the child process.
+_UV_PATH = shutil.which("uv")
+
 from rlm import bash
 
 bash_module = sys.modules["rlm.bash"]
@@ -183,8 +187,11 @@ class WindowsBashRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
     def test_screenshot_skill_suite(self):
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-windows-screenshot.py")
+        env = dict(os.environ)
+        if _UV_PATH:
+            env["PRIME_SCREENSHOT_UV"] = _UV_PATH
         result = subprocess.run(
-            [sys.executable, script], capture_output=True, text=True, timeout=600
+            [sys.executable, script], capture_output=True, text=True, timeout=600, env=env
         )
         self.assertEqual(
             result.returncode,

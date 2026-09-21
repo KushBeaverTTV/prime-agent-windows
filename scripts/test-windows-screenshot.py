@@ -26,6 +26,13 @@ _VENV_MARKER = "PRIME_SCREENSHOT_TEST_PYTHON"
 
 
 def _uv() -> str:
+    # The parent harness may pass a pre-scrub location: its setUpModule replaces
+    # PATH before spawning us, so PATH alone cannot be trusted here.
+    override = os.environ.get("PRIME_SCREENSHOT_UV")
+    if override:
+        if Path(override).is_file():
+            return override
+        raise RuntimeError(f"PRIME_SCREENSHOT_UV points at a missing file: {override}")
     uv = shutil.which("uv")
     if uv:
         return uv
@@ -35,7 +42,9 @@ def _uv() -> str:
     ):
         if candidate.is_file():
             return str(candidate)
-    raise RuntimeError("uv not found on PATH or in the known install locations")
+    raise RuntimeError(
+        "uv not found: PRIME_SCREENSHOT_UV unset and no uv on PATH or in the "
+        "known install locations")
 
 
 if not os.environ.get(_VENV_MARKER):
