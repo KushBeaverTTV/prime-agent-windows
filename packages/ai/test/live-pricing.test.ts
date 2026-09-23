@@ -60,9 +60,9 @@ function snapshot(providers: LivePricingSnapshot["providers"]): LivePricingSnaps
 
 describe("applyLivePricing", () => {
 	it("rewrites cost for a provider/id entry", () => {
-		const model = getModel("anthropic", "claude-sonnet-4-5");
+		const model = getModel("anthropic", "claude-fable-5");
 		const live = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
-		const result = applyLivePricing(model, snapshot({ anthropic: { "claude-sonnet-4-5": live } }));
+		const result = applyLivePricing(model, snapshot({ anthropic: { "claude-fable-5": live } }));
 		expect(result.cost).toEqual(live);
 	});
 
