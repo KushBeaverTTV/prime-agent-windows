@@ -133,16 +133,45 @@ function Invoke-Proc {
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
     $p = [System.Diagnostics.Process]::Start($psi)
+    # Event-based line reads capture partial output: a spawned grandchild (e.g.
+    # the resident daemon `update` starts) inherits the pipes, so ReadToEndAsync
+    # never completes and an unbounded stream wait would hang the run forever.
+    $cap = [hashtable]::Synchronized(@{
+        Out    = [System.Text.StringBuilder]::new()
+        Err    = [System.Text.StringBuilder]::new()
+        OutEof = $false
+        ErrEof = $false
+    })
+    $subOut = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -MessageData $cap -Action {
+        if ($null -eq $EventArgs.Data) { $Event.MessageData.OutEof = $true }
+        else { [void]$Event.MessageData.Out.AppendLine($EventArgs.Data) }
+    }
+    $subErr = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -MessageData $cap -Action {
+        if ($null -eq $EventArgs.Data) { $Event.MessageData.ErrEof = $true }
+        else { [void]$Event.MessageData.Err.AppendLine($EventArgs.Data) }
+    }
     try {
-        $stdout = $p.StandardOutput.ReadToEndAsync()
-        $stderr = $p.StandardError.ReadToEndAsync()
-        if (-not $p.WaitForExit($TimeoutMs)) {
+        $p.BeginOutputReadLine()
+        $p.BeginErrorReadLine()
+        $exited = $p.WaitForExit($TimeoutMs)
+        if (-not $exited) {
             try { $p.Kill() } catch {}
-            return @{ Code = -1; Stdout = $stdout.Result; Stderr = "TIMED OUT after ${TimeoutMs}ms`n" + $stderr.Result }
         }
-        $stdout.Wait(); $stderr.Wait()
-        return @{ Code = $p.ExitCode; Stdout = $stdout.Result; Stderr = $stderr.Result }
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        while ((-not $cap.OutEof -or -not $cap.ErrEof) -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+        }
+        $outText = $cap.Out.ToString()
+        $errText = $cap.Err.ToString()
+        if (-not $cap.OutEof) { $outText += '<stream still held open by a child process; truncated>' }
+        if (-not $cap.ErrEof) { $errText += '<stream still held open by a child process; truncated>' }
+        if (-not $exited) {
+            return @{ Code = -1; Stdout = $outText; Stderr = "TIMED OUT after ${TimeoutMs}ms`n" + $errText }
+        }
+        return @{ Code = $p.ExitCode; Stdout = $outText; Stderr = $errText }
     } finally {
+        Unregister-Event -SubscriptionId $subOut.Id -ErrorAction SilentlyContinue
+        Unregister-Event -SubscriptionId $subErr.Id -ErrorAction SilentlyContinue
         $p.Dispose()
     }
 }
