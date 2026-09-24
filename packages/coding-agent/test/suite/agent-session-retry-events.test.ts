@@ -32,7 +32,10 @@ function normalizeEventOrder(events: Harness["events"]): string[] {
 	return normalized;
 }
 
-function structuredProviderFailure(kind: "auth" | "invalid_request" | "refusal" | "permission"): AssistantMessage {
+function structuredProviderFailure(
+	kind: "auth" | "invalid_request" | "refusal" | "permission",
+	status?: number,
+): AssistantMessage {
 	return {
 		...fauxAssistantMessage("", {
 			stopReason: "error",
@@ -42,7 +45,7 @@ function structuredProviderFailure(kind: "auth" | "invalid_request" | "refusal" 
 			{
 				type: "provider_stream_failure",
 				timestamp: Date.now(),
-				details: { kind },
+				details: { kind, ...(status === undefined ? {} : { status }) },
 			},
 		],
 	};
@@ -1274,6 +1277,21 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.faux.state.callCount).toBe(1);
 		expect(harness.eventsOfType("auto_retry_start")).toEqual([]);
 		expect(harness.session.model?.id).toBe("faux-1");
+	});
+
+	it.each([
+		[undefined, 1],
+		["faux/faux-backup", 2],
+	])("402 balance failure with providerBackupModel %s", async (backup, calls) => {
+		const harness = await createHarness({
+			models: [{ id: "faux-1" }, { id: "faux-backup" }],
+			settings: { providerBackupModel: backup, retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
+		});
+		harnesses.push(harness);
+		harness.setResponses([structuredProviderFailure("permission", 402), fauxAssistantMessage("backup answer")]);
+		await harness.session.prompt("test");
+		expect(harness.faux.state.callCount).toBe(calls);
+		expect(harness.eventsOfType("auto_retry_start").map((e) => e.reason)).toEqual(backup ? ["backup"] : []);
 	});
 
 	it("falls back to the bounded wait when the backup model cannot be resolved", async () => {

@@ -13203,6 +13203,10 @@ export class AgentSession {
 			return false;
 		}
 
+		if (providerStreamFailureStatus(message) === 402) {
+			return this._backupModelAvailableForRun();
+		}
+
 		if (this._isStructuredPermanentProviderRetryExhausted(message)) {
 			return false;
 		}
@@ -13342,7 +13346,7 @@ export class AgentSession {
 		// compares against the model serving the run, so a backup equal to a
 		// routed turn's image model is recognized as the duplicate it is instead
 		// of reporting a no-op backup switch with a zero-delay retry.
-		if (waitClass !== "permanent") {
+		if (waitClass !== "permanent" || providerStreamFailureStatus(message) === 402) {
 			const backupModel = this._resolveBackupModel();
 			if (backupModel && !modelsAreEqual(this._runModel(), backupModel)) {
 				return this._handleBackupModelRetry(message, options, backupModel);
@@ -13515,6 +13519,12 @@ export class AgentSession {
 			return undefined;
 		}
 		return backupModel;
+	}
+
+	/** Whether a configured backup model can take over the current run. */
+	private _backupModelAvailableForRun(): boolean {
+		const backupModel = this._resolveBackupModel();
+		return !!backupModel && !modelsAreEqual(this._runModel(), backupModel);
 	}
 
 	/** Route the failed turn to the backup model and retry immediately on it. */

@@ -1,0 +1,1 @@
+- Changed `providerBackupModel` to also take over when the primary model fails with HTTP 402 (insufficient balance).
