@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { describe, expect, test, vi } from "vitest";
+import type { ModelRegistry } from "../src/core/model-registry.js";
 import type { AgentStatus } from "../src/core/session-manager.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
@@ -9,6 +11,7 @@ import {
 	DaemonSessionSummarizer,
 	type GenerateAgentStatusParams,
 	parseAgentStatusResponse,
+	resolveSummaryModel,
 } from "../src/modes/daemon/daemon-session-summarizer.js";
 
 function userMessage(text: string, timestamp = 0): AgentMessage {
@@ -532,5 +535,26 @@ describe("daemon session summarizer", () => {
 			});
 			expect(appended).toHaveLength(0);
 		});
+	});
+
+	test("resolveSummaryModel uses the configured auxiliary model, else the default", () => {
+		const models = [
+			{ provider: "prime-inference", id: "qwen/qwen3-30b-a3b-instruct-2507" },
+			{ provider: "minimax", id: "MiniMax-M3" },
+		] as Model<Api>[];
+		const registry = (authed: (m: Model<Api>) => boolean = () => true) =>
+			({
+				find: (p: string, i: string) => models.find((m) => m.provider === p && m.id === i),
+				getAvailable: () => models,
+				hasConfiguredAuth: authed,
+			}) as unknown as ModelRegistry;
+		expect(resolveSummaryModel(registry(), "minimax/MiniMax-M3")).toBe(models[1]);
+		expect(resolveSummaryModel(registry(), "openai/gpt-5")).toBe(models[0]);
+		expect(
+			resolveSummaryModel(
+				registry((m) => m === models[0]),
+				"minimax/MiniMax-M3",
+			),
+		).toBe(models[0]);
 	});
 });

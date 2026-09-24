@@ -1,0 +1,1 @@
+- Fixed HTTP 402 (insufficient balance) being retried as a transient failure; it now fails immediately.

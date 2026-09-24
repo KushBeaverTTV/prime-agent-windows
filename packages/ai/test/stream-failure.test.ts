@@ -49,6 +49,7 @@ describe("classifyStreamFailure", () => {
 		["usage_limit_reached", undefined, "rate_limit"],
 		["usage_not_included", 403, "rate_limit"],
 		[undefined, 429, "rate_limit"],
+		[undefined, 402, "permission"],
 		["refusal", undefined, "refusal"],
 		["sensitive", undefined, "safety"],
 		["SAFETY", undefined, "safety"],

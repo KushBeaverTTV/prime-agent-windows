@@ -1,0 +1,1 @@
+- Changed daemon status summaries to use the `auxiliaryModel` setting when it is configured and available.

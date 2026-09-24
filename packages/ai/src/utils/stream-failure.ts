@@ -80,7 +80,9 @@ export function classifyStreamFailure(providerErrorType?: string, status?: numbe
 	}
 	// Permission/403 shapes are entitlement or policy denials, not bad credentials: never auth-stale.
 	if (/authentication|unauthorized/.test(type) || status === 401) return "auth";
-	if (/permission|forbidden|access.?denied/.test(type) || status === 403) return "permission";
+	// Permission/402 shapes are payment or balance denials: permanent until the
+	// account changes, so they must not be retried as transient.
+	if (/permission|forbidden|access.?denied/.test(type) || status === 403 || status === 402) return "permission";
 	if (type.includes("invalid_request") || type.includes("not_found_error") || status === 400 || status === 404) {
 		return "invalid_request";
 	}

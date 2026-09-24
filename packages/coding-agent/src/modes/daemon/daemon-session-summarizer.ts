@@ -2,6 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { completeSimple } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "../../core/model-registry.js";
+import { findExactModelReferenceMatch } from "../../core/model-resolver.js";
 import { completeWithProviderRetry, type ProviderRetryPolicy, providerRetryPolicy } from "../../core/provider-retry.js";
 import type { AgentStatus, AgentTaskState } from "../../core/session-manager.js";
 import type { ActiveSessionState } from "./active-session-state.js";
@@ -45,8 +46,14 @@ export interface AgentStatusResult {
 	taskState?: AgentTaskState;
 }
 
-/** Resolve the cheap summary model, or undefined when it has no configured auth. */
-export function resolveSummaryModel(registry: ModelRegistry): Model<Api> | undefined {
+/** Resolve the summary model: the configured auxiliary model when usable, else the cheap default, or undefined without auth. */
+export function resolveSummaryModel(registry: ModelRegistry, auxiliaryModel?: string): Model<Api> | undefined {
+	if (auxiliaryModel) {
+		const configured = findExactModelReferenceMatch(auxiliaryModel, registry.getAvailable());
+		if (configured && registry.hasConfiguredAuth(configured)) {
+			return configured;
+		}
+	}
 	const model = registry.find(SUMMARY_MODEL_PROVIDER, SUMMARY_MODEL_ID);
 	if (model && registry.hasConfiguredAuth(model)) {
 		return model;
@@ -153,16 +160,17 @@ export interface GenerateAgentStatusParams {
 	messages: readonly AgentMessage[];
 	isWorking: boolean;
 	retryPolicy?: ProviderRetryPolicy;
+	auxiliaryModel?: string;
 	signal?: AbortSignal;
 }
 
 /** One cheap model call for a fresh status, or undefined if unavailable/empty/failed. */
 export async function generateAgentStatus(params: GenerateAgentStatusParams): Promise<AgentStatusResult | undefined> {
-	const { registry, messages, isWorking, retryPolicy, signal } = params;
+	const { registry, messages, isWorking, retryPolicy, auxiliaryModel, signal } = params;
 	if (messages.length === 0) {
 		return undefined;
 	}
-	const model = resolveSummaryModel(registry);
+	const model = resolveSummaryModel(registry, auxiliaryModel);
 	if (!model) {
 		return undefined;
 	}
@@ -411,6 +419,7 @@ export class DaemonSessionSummarizer {
 				messages: contextMessages,
 				isWorking,
 				retryPolicy: providerRetryPolicy(session.settingsManager),
+				auxiliaryModel: session.settingsManager.getAuxiliaryModel(),
 				signal: controller.signal,
 			});
 			if (generated) {
