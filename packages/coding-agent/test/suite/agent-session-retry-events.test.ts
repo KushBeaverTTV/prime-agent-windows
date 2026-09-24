@@ -51,6 +51,8 @@ function structuredProviderFailure(
 	};
 }
 
+const backupPair = [{ id: "faux-1" }, { id: "faux-backup" }];
+
 function rateLimitedFailure(retryAfterMs: number): AssistantMessage {
 	return {
 		...fauxAssistantMessage("", { stopReason: "error", errorMessage: "429 rate limited" }),
@@ -1282,13 +1284,10 @@ describe("AgentSession retry and event characterization", () => {
 	it.each([
 		[undefined, 1],
 		["faux/faux-backup", 2],
-	])("402 balance failure with providerBackupModel %s", async (backup, calls) => {
-		const harness = await createHarness({
-			models: [{ id: "faux-1" }, { id: "faux-backup" }],
-			settings: { providerBackupModel: backup, retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } },
-		});
+	])("402 backup=%s", async (backup, calls) => {
+		const harness = await createHarness({ models: backupPair, settings: { providerBackupModel: backup } });
 		harnesses.push(harness);
-		harness.setResponses([structuredProviderFailure("permission", 402), fauxAssistantMessage("backup answer")]);
+		harness.setResponses([structuredProviderFailure("permission", 402), fauxAssistantMessage("ok")]);
 		await harness.session.prompt("test");
 		expect(harness.faux.state.callCount).toBe(calls);
 		expect(harness.eventsOfType("auto_retry_start").map((e) => e.reason)).toEqual(backup ? ["backup"] : []);
